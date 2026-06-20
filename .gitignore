@@ -1,4 +1,5 @@
-
 *.csv
 *.csv.gz
 data/nosql_mock/stars/
+.gopath/
+*.exe

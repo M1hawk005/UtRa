@@ -22,20 +22,43 @@ let starsPoints;
 let pathLine;
 let starData = [];
 
-// Create a procedural soft glowing circle texture
+// Create a procedural shaded sphere texture with noise
 function createCircleTexture() {
     const canvas = document.createElement('canvas');
-    canvas.width = 64;
-    canvas.height = 64;
+    canvas.width = 128;
+    canvas.height = 128;
     const context = canvas.getContext('2d');
-    const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
-    // Matte sphere core with a slight glow on the very edge
-    gradient.addColorStop(0, 'rgba(255,255,255,1)');
-    gradient.addColorStop(0.8, 'rgba(255,255,255,1)');
-    gradient.addColorStop(0.95, 'rgba(255,255,255,0.4)');
-    gradient.addColorStop(1, 'rgba(0,0,0,0)');
+    
+    // Base circle
+    context.fillStyle = '#ffffff';
+    context.beginPath();
+    context.arc(64, 64, 60, 0, Math.PI * 2);
+    context.fill();
+
+    // 3D Spherical Shading (lighter top-left, darker bottom-right)
+    const gradient = context.createRadialGradient(40, 40, 10, 64, 64, 60);
+    gradient.addColorStop(0, 'rgba(255,255,255,1)');    // Highlight
+    gradient.addColorStop(0.6, 'rgba(200,200,200,1)');  // Mid-tone
+    gradient.addColorStop(0.95, 'rgba(80,80,80,1)');    // Shadow edge
+    gradient.addColorStop(1, 'rgba(0,0,0,0)');          // Outer edge
+    
+    // Apply shading over the circle
+    context.globalCompositeOperation = 'source-atop';
     context.fillStyle = gradient;
-    context.fillRect(0, 0, 64, 64);
+    context.fillRect(0, 0, 128, 128);
+
+    // Add subtle noise for "texture"
+    const imgData = context.getImageData(0, 0, 128, 128);
+    for (let i = 0; i < imgData.data.length; i += 4) {
+        if (imgData.data[i+3] > 0) { // If inside circle
+            let noise = (Math.random() - 0.5) * 20; 
+            imgData.data[i] = Math.min(255, Math.max(0, imgData.data[i] + noise));
+            imgData.data[i+1] = Math.min(255, Math.max(0, imgData.data[i+1] + noise));
+            imgData.data[i+2] = Math.min(255, Math.max(0, imgData.data[i+2] + noise));
+        }
+    }
+    context.putImageData(imgData, 0, 0);
+
     const tex = new THREE.CanvasTexture(canvas);
     return tex;
 }
@@ -64,8 +87,12 @@ const vertexShader = `
     void main() {
         vColor = customColor;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        // Increase the multiplier to make the spheres larger and more visible
-        gl_PointSize = size * (800.0 / -mvPosition.z);
+        
+        // Scale size by distance, but clamp to avoid massive blobs
+        float distance = -mvPosition.z;
+        float scaledSize = size * (400.0 / distance);
+        gl_PointSize = clamp(scaledSize, 1.5, 120.0);
+        
         gl_Position = projectionMatrix * mvPosition;
     }
 `;
@@ -128,9 +155,11 @@ async function loadStars() {
             },
             vertexShader: vertexShader,
             fragmentShader: fragmentShader,
-            blending: THREE.AdditiveBlending,
-            depthTest: false,
-            transparent: true
+            blending: THREE.NormalBlending, // Solid occlusion instead of additive
+            depthTest: true,                // Enable depth testing
+            depthWrite: true,               // Write to depth buffer
+            transparent: true,
+            alphaTest: 0.1                  // Discard fragments with near-zero alpha to ensure sharp edges
         });
 
         starsPoints = new THREE.Points(starsGeometry, shaderMaterial);
