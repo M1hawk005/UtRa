@@ -20,18 +20,31 @@ The `pathfinding/` module handles all graph abstractions and traversal logic.
 * **A* Algorithm**: An optimized A* search algorithm leverages `container/heap` priority queues for extremely fast traversals.
 * **Constraint-Based Optimization**: The pathfinding actively respects the physical limitations of the hypothetical ship—specifically, a `max_dist` parameter capping the distance of a single hyperdrive jump. If a star is too isolated, the system outputs an explicit `Unreachable` warning rather than failing silently.
 
-### 3. CLI Application (`cmd/utra`)
+### 3. WebGL 3D Visualization (`cmd/web`)
+A full-stack web application is available for visualizing the graph.
+* **Backend API**: The Go HTTP server (`:8080`) serves the local JSON dataset via `/api/stars` and computes paths dynamically via `/api/path`.
+* **Frontend**: Built with vanilla HTML/CSS/JS and `Three.js` WebGL rendering. It maps the dataset in 3D space with `OrbitControls` and draws calculated neon paths with time dilation summaries in a stunning glassmorphism UI.
+
+### 4. CLI Application (`cmd/utra`)
 The user-facing CLI combines the database and pathfinding engines.
 * **Visual Route Mapping**: Automatically builds and prints an ASCII diagram of the calculated route between stars.
 * **Relativistic Time Dilation**: Users can optionally provide the ship's speed as a fraction of the speed of light ($c$). The CLI computes the Lorentz factor ($\gamma$) to calculate the time experienced by outside observers vs. the much shorter proper time experienced by the ship's crew.
 
 ## Usage
 
-### Ingesting Data
-Before running the CLI, you must ingest the star dataset into the local NoSQL mock database.
+### Ingesting Data (Automated)
+Before running the UI or CLI, you must ingest the star dataset. 
+If the official dataset is not present, the `ingest` script will automatically download the 94MB dataset from the Astronomy Nexus, decompress it, and begin the ingestion process into the local NoSQL mock database!
 ```bash
 go run ./cmd/ingest
 ```
+
+### Running the WebGL 3D Visualization UI
+To launch the interactive 3D map:
+```bash
+go run ./cmd/web
+```
+Then open your browser to [http://localhost:8080](http://localhost:8080).
 
 ### Running the CLI
 Provide the starting star name, destination star name, and maximum jump distance in parsecs. Optionally, provide the ship's speed as a fraction of $c$ (defaults to `0.99c`).
