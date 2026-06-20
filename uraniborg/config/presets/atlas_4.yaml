@@ -1,0 +1,8 @@
+magnitude: 10
+magnitudelabel: 6
+scale: 4
+projection: 1
+aspect: 1.3333
+labeltype: 2
+legend: true
+coordinates: true

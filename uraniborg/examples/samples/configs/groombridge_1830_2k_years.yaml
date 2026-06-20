@@ -1,0 +1,7 @@
+from: groombridge 1830
+to: Looking along path of travel, -82.576,-171.566,-260.06
+preset: mag_6
+scale: 0.5
+time: 2000
+motions: true
+chartname: groombridge_1830_2k_years

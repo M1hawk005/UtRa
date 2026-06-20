@@ -1,0 +1,10 @@
+# Original chart was ca. 1988, homebrew DOS/BASIC thing loading
+# the Yale BSC and
+# showing a similar area.
+from: sol
+to: HR 7399
+width: 1200
+scale: 2
+aspect: 1.333
+magnitude: 7
+labeltype: 3

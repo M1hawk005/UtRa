@@ -1,0 +1,9 @@
+from: sol
+to: 61 cyg
+preset: mag_6
+magnitudelabel: 3
+distancelabel: 13
+scale: 2
+labeltype: 2
+width: 800
+aspect: 1

@@ -1,0 +1,5 @@
+from: sol
+to: 61 cyg
+preset: mag_6
+time: 5000
+motions: false

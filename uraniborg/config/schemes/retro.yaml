@@ -1,0 +1,74 @@
+name: retro
+colors:
+  background:
+    r: 0
+    g: 0
+    b: 0
+  main_label:
+    r: 0
+    g: 0.85
+    b: 0
+  distance_label:
+    r: 1
+    g: 1
+    b: 0
+  motion_label:
+    r: 0.6
+    g: 0.6
+    b: 0.6
+  caption:
+    r: 1
+    g: 1
+    b: 1
+  center_mark:
+    r: 0
+    g: 0.8
+    b: 0.8
+  coordinate_grid:
+    r: 0
+    g: 0
+    b: 1
+  constellation_names:
+    r: 0.0
+    g: 0.4
+    b: 0.4
+  highlighted_stars:
+    r: 1.0
+    g: 0.0
+    b: 0.8
+fonts:
+  caption:
+    file: Roboto-Regular.ttf
+    size: 14
+  label:
+    file: Roboto-Medium.ttf
+    size: 14
+symbols:
+  star:
+    min_star_level: 0.7
+    max_star_level: 1
+    base_star_size: 1
+    star_size_change: 0.425
+    star_brightness_change: 0.35
+    legend_separation: 3.0
+    starburst:
+      image_size: 2
+      line_length: 0.5
+      brightness: 1.0
+  motion:
+    minimum_length: 15
+    arrowhead_length: 5
+    arrowhead_angle: 30
+  center_mark:
+    bar_length: 10.0
+    bar_offset: 8.0
+labels:
+  label_proximity:
+    x: 10
+    'y': 10
+  label_offset:
+    x: 8
+    'y': 12
+  caption_offset:
+    x: 10
+    'y': 20

@@ -1,0 +1,15 @@
+to: Betelgeuse
+from: Sol
+projection: 2
+aspect: 1.3333
+width: 1024
+magnitude: 5.5
+magnitudelabel: 0.0
+distancelabel: 10
+scale: 1
+time: 0
+motions: false
+labeltype: 0
+coordinates: false
+constellations: false
+galactic: false

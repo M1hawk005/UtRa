@@ -1,0 +1,74 @@
+name: small
+colors:
+  background:
+    r: 0.0
+    g: 0.01
+    b: 0.02
+  main_label:
+    r: 0.2
+    g: 0.9
+    b: 0.2
+  distance_label:
+    r: 0.9
+    g: 0.7
+    b: 0.2
+  motion_label:
+    r: 0.35
+    g: 0.4
+    b: 0.5
+  caption:
+    r: 1.0
+    g: 1.0
+    b: 1.0
+  center_mark:
+    r: 1.0
+    g: 1.0
+    b: 0.0
+  coordinate_grid:
+    r: 0.2
+    g: 0.2
+    b: 0.2
+  constellation_names:
+    r: 0.2
+    g: 0.3
+    b: 0.4
+  highlighted_stars:
+    r: 0.4
+    g: 1
+    b: 1
+fonts:
+  caption:
+    file: Roboto-Regular.ttf
+    size: 14
+  label:
+    file: Roboto-Medium.ttf
+    size: 12
+symbols:
+  star:
+    min_star_level: 0.125
+    max_star_level: 1.0
+    base_star_size: 1.0
+    star_size_change: 0.145
+    star_brightness_change: 0.15
+    legend_separation: 3.0
+    starburst:
+      image_size: 0.0
+      line_length: 0.0
+      brightness: 0.0
+  motion:
+    minimum_length: 15
+    arrowhead_length: 5
+    arrowhead_angle: 30
+  center_mark:
+    bar_length: 10.0
+    bar_offset: 8.0
+labels:
+  label_proximity:
+    x: 10.0
+    'y': 10.0
+  label_offset:
+    x: 8.0
+    'y': 12.0
+  caption_offset:
+    x: 10.0
+    'y': 20.0

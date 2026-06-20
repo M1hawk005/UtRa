@@ -1,0 +1,74 @@
+name: inverse
+colors:
+  background:
+    r: 1
+    g: 1
+    b: 1
+  main_label:
+    r: 0.25
+    g: 0.25
+    b: 0.25
+  distance_label:
+    r: 0.25
+    g: 0.25
+    b: 0.25
+  motion_label:
+    r: 0.25
+    g: 0.25
+    b: 0.25
+  caption:
+    r: 0
+    g: 0
+    b: 0
+  center_mark:
+    r: 0
+    g: 0.05
+    b: 0.05
+  coordinate_grid:
+    r: 0.5
+    g: 0.5
+    b: 0.5
+  constellation_names:
+    r: 0.75
+    g: 0.75
+    b: 0.75
+  highlighted_stars:
+    r: 0.25
+    g: 0.25
+    b: 0.25
+symbols:
+  star:
+    min_star_level: 0
+    max_star_level: 0
+    base_star_size: 1.1
+    star_size_change: 0.8
+    star_brightness_change: 0.5
+    legend_separation: 3.5
+    starburst:
+      image_size: 0.0
+      line_length: 0.0
+      brightness: 0.0
+  motion:
+    minimum_length: 15
+    arrowhead_length: 5
+    arrowhead_angle: 30
+  center_mark:
+    bar_length: 10.0
+    bar_offset: 8.0
+fonts:
+  caption:
+    file: Roboto-Regular.ttf
+    size: 14
+  label:
+    file: Roboto-Medium.ttf
+    size: 12
+labels:
+  label_proximity:
+    x: 10
+    'y': 10
+  label_offset:
+    x: 9
+    'y': 10
+  caption_offset:
+    x: 10.0
+    'y': 20.0

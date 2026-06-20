@@ -1,0 +1,12 @@
+magnitude: 12
+magnitudelabel: 7
+scale: 7.75
+projection: 1
+aspect: 0.7
+distancelabel: 200
+lightyears: true
+time: 1000
+motions: true
+labeltype: 2
+legend: true
+coordinates: true
