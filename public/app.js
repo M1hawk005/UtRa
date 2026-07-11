@@ -26,8 +26,8 @@ let galacticCenter = new THREE.Vector3();
 let focusRing; // Tactical ring to highlight selected star
 
 function createNebulae() {
-    const numRegions = 20;
-    const particlesPerRegion = 800;
+    const numRegions = 12;
+    const particlesPerRegion = 500;
     const totalParticles = numRegions * particlesPerRegion;
     
     const nPos = new Float32Array(totalParticles * 3);
@@ -41,10 +41,10 @@ function createNebulae() {
     const aConst = 1000;
     
     const colors = [
-        new THREE.Color(0xff3366), // H-alpha red
-        new THREE.Color(0xff4488), // H-alpha pink
-        new THREE.Color(0x33ccff), // O-III cyan
-        new THREE.Color(0xcc2266)  // S-II deep red
+        new THREE.Color(0x772244), // H-alpha red (muted)
+        new THREE.Color(0x663355), // H-alpha pink (muted)
+        new THREE.Color(0x335577), // O-III cyan (muted)
+        new THREE.Color(0x552233)  // S-II deep red (muted)
     ];
 
     let offset = 0;
@@ -72,7 +72,7 @@ function createNebulae() {
             let t = (i / particlesPerRegion) * Math.PI * 2;
             let dx = Math.sin(t * f1 + phase1) * extent * 0.5 + (Math.random() - 0.5) * extent * 0.2;
             let dy = Math.cos(t * f2 + phase2) * extent * 0.5 + (Math.random() - 0.5) * extent * 0.2;
-            let dz = (Math.random() - 0.5) * 150; 
+            let dz = (Math.random() - 0.5) * 60; 
             
             nPos[(offset + i) * 3] = cx + dx;
             nPos[(offset + i) * 3 + 1] = cy + dy;
@@ -80,13 +80,13 @@ function createNebulae() {
             
             let distToCenter = Math.sqrt(dx*dx + dy*dy + dz*dz) / (extent * 0.7);
             const edgeFactor = Math.min(1.0, distToCenter);
-            const pColor = regionColor.clone().lerp(new THREE.Color(0xffffff), Math.random() * 0.2); 
+            const pColor = regionColor.clone().lerp(new THREE.Color(0x000000), Math.random() * 0.1); 
             
             nCol[(offset + i) * 3] = pColor.r;
             nCol[(offset + i) * 3 + 1] = pColor.g;
             nCol[(offset + i) * 3 + 2] = pColor.b;
-            nSize[offset + i] = 300 + Math.random() * 500;
-            nAlpha[offset + i] = Math.max(0.1, 1.0 - edgeFactor);
+            nSize[offset + i] = 60 + Math.random() * 80;
+            nAlpha[offset + i] = Math.max(0.05, 0.3 - edgeFactor * 0.3);
         }
         offset += particlesPerRegion;
     }
@@ -141,12 +141,13 @@ function createNebulae() {
                 float dist = length(uv);
                 if (dist > 0.5) discard;
                 
-                float glow = pow(1.0 - (dist * 2.0), 2.0);
+                float glow = pow(1.0 - (dist * 2.0), 3.0);
                 vec2 p = (gl_PointCoord.xy * 5.0) + vUvOffset;
-                float n = fbm(p);
-                float finalAlpha = glow * n * vAlpha * 2.5; 
+                float n = fbm(p) * 0.3 + 0.7; // dampened noise, mostly smooth
+                float finalAlpha = glow * n * vAlpha * 0.08; 
                 
-                gl_FragColor = vec4(vColor * finalAlpha, finalAlpha);
+                if (finalAlpha < 0.005) discard;
+                gl_FragColor = vec4(vColor * 0.3, finalAlpha);
             }
         `,
         blending: THREE.AdditiveBlending,
@@ -216,7 +217,7 @@ function initGalaxy() {
                     gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
                 } else {
                     float intensity = pow(1.0 - (r * 2.0), 3.0) * spiral;
-                    gl_FragColor = vec4(color * intensity * 2.5, intensity);
+                    gl_FragColor = vec4(color * intensity * 0.8, intensity);
                 }
             }
         `,
@@ -324,12 +325,14 @@ function initGalaxy() {
             z = (Math.random() - 0.5) * 2 * (80 + Math.random() * 70); // 80-150pc
             
             let mixR = r / maxR;
-            if (mixR < 0.3) {
-                rColor = 1.0; gColor = 1.0 - mixR; bColor = 0.8 + mixR*0.2;
-            } else if (mixR < 0.7) {
-                rColor = 1.0 - (mixR-0.3); gColor = 1.0; bColor = 1.0;
+            if (mixR < 0.2) {
+                rColor = 1.0; gColor = 0.95; bColor = 0.85 + mixR * 0.5;
+            } else if (mixR < 0.5) {
+                rColor = 1.0 - (mixR - 0.2) * 0.5; gColor = 0.95 - (mixR - 0.2) * 0.2; bColor = 0.95 + (mixR - 0.2) * 0.2;
+            } else if (mixR < 0.8) {
+                rColor = 0.85 - (mixR - 0.5) * 0.5; gColor = 0.89 - (mixR - 0.5) * 0.3; bColor = 1.0;
             } else {
-                rColor = 0.6; gColor = 0.8; bColor = 1.0;
+                rColor = 0.6; gColor = 0.75; bColor = 1.0;
             }
             
         } else {
@@ -408,9 +411,9 @@ function initGalaxy() {
                 if (dist > 0.5) discard;
                 float glow = exp(-dist * dist * 15.0);
                 float sparkle = 0.8 + 0.4 * vRand;
-                float haze = pow(1.0 - (dist * 2.0), 3.0) * 0.15;
-                float finalAlpha = glow * sparkle + haze;
-                gl_FragColor = vec4(vColor * finalAlpha, finalAlpha);
+                float haze = pow(1.0 - (dist * 2.0), 3.0) * 0.04;
+                float finalAlpha = glow * sparkle * 0.7 + haze;
+                gl_FragColor = vec4(vColor * finalAlpha * 0.6, finalAlpha);
             }
         `,
         blending: THREE.AdditiveBlending,
@@ -425,7 +428,7 @@ function initGalaxy() {
     scene.userData.galaxyMesh = galaxyMesh;
 
     // 3. Dust Extinction Layer
-    const dustCount = 30000;
+    const dustCount = 50000;
     const dPos = new Float32Array(dustCount * 3);
     const dCol = new Float32Array(dustCount * 3);
     const dSize = new Float32Array(dustCount);
@@ -436,19 +439,19 @@ function initGalaxy() {
         let armIdx = i % arms;
         let armOffset = armIdx * (Math.PI * 2 / arms);
         
-        let armWidth = 0.05 + (r / maxR) * 0.2;
+        let armWidth = 0.03 + (r / maxR) * 0.15;
         let scatter = (Math.random() - 0.5) * armWidth;
         let finalAngle = thetaSpiral + armOffset + scatter - 0.05; // along inner edges
         
         dPos[i * 3] = r * Math.cos(finalAngle);
         dPos[i * 3 + 1] = r * Math.sin(finalAngle);
-        dPos[i * 3 + 2] = (Math.random() - 0.5) * 2 * 60; // very thin, ~50-100pc
+        dPos[i * 3 + 2] = (Math.random() - 0.5) * 2 * 40; // very thin, ~40pc
         
-        dCol[i * 3] = 0.1;
-        dCol[i * 3 + 1] = 0.05;
-        dCol[i * 3 + 2] = 0.02; // dark brown
+        dCol[i * 3] = 0.0;
+        dCol[i * 3 + 1] = 0.0;
+        dCol[i * 3 + 2] = 0.0; // pure black — just darkens, no color cast
         
-        dSize[i] = 10.0 + Math.random() * 20.0;
+        dSize[i] = 20.0 + Math.random() * 40.0;
     }
 
     const dGeo = new THREE.BufferGeometry();
@@ -475,8 +478,8 @@ function initGalaxy() {
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
-                float alpha = pow(1.0 - (dist * 2.0), 1.5) * 0.85;
-                gl_FragColor = vec4(vColor, alpha);
+                float alpha = pow(1.0 - (dist * 2.0), 2.0) * 0.95;
+                gl_FragColor = vec4(vColor * 10.0, alpha);
             }
         `,
         blending: THREE.NormalBlending,
@@ -683,7 +686,8 @@ async function loadStars() {
         scene.add(starsPoints);
 
         controls.target.set(galacticCenter.x, galacticCenter.y, galacticCenter.z);
-        camera.position.set(galacticCenter.x - 500, galacticCenter.y + 500, galacticCenter.z + 1500);
+        let gc = galacticCenter;
+        camera.position.set(gc.x - 5000, gc.y + 8000, gc.z + 18000);
 
         // Auto-select a valid star for routing — only real catalog stars within jump range
         if (starData.length > 1) {
