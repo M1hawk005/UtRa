@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	datasetPath := "x:/Projects/UtRa/uraniborg/data/athyg_33_subset.csv"
+	datasetPath := "uraniborg/data/athyg_33_subset.csv"
 
 	if _, err := os.Stat(datasetPath); os.IsNotExist(err) {
 		log.Fatalf("Dataset not found at %s. Please ensure the dataset is present.", datasetPath)
@@ -24,7 +24,7 @@ func main() {
 
 	fmt.Printf("Loaded %d stars from CSV. Initializing local NoSQL DB...\n", len(stars))
 	
-	db, err := database.NewLocalJSONDatabase("x:/Projects/UtRa/data/nosql_mock/stars")
+	db, err := database.NewLocalJSONDatabase("data/nosql_mock/stars")
 	if err != nil {
 		log.Fatalf("Failed to init database: %v", err)
 	}

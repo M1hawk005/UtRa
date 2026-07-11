@@ -227,3 +227,45 @@ ul li {
     display: flex;
     justify-content: space-between;
 }
+
+/* Mobile Responsive UI */
+@media (max-width: 600px) {
+    #ui-panel {
+        top: auto;
+        bottom: 0;
+        left: 0;
+        width: 100vw;
+        max-height: 50vh;
+        border-left: none;
+        border-right: none;
+        border-bottom: none;
+        border-top: 2px solid var(--border);
+        padding: 1rem;
+    }
+
+    input {
+        font-size: 1.5rem;
+    }
+
+    button {
+        min-height: 48px;
+    }
+
+    ul {
+        display: flex;
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        white-space: nowrap;
+        gap: 1rem;
+        padding-bottom: 0.5rem;
+    }
+
+    ul li {
+        flex-direction: column;
+        border-bottom: none;
+        border-right: 1px dotted rgba(255,255,255,0.2);
+        padding-right: 1rem;
+        min-width: 200px;
+    }
+}
