@@ -111,7 +111,7 @@ function createNebulae() {
                 vUvOffset = position.xy * 0.05;
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
-                gl_PointSize = size * (3000.0 / distance);
+                gl_PointSize = size * (12000.0 / distance);
                 gl_Position = projectionMatrix * mvPosition;
             }
         `,
@@ -144,10 +144,10 @@ function createNebulae() {
                 float glow = pow(1.0 - (dist * 2.0), 3.0);
                 vec2 p = (gl_PointCoord.xy * 5.0) + vUvOffset;
                 float n = fbm(p) * 0.3 + 0.7; // dampened noise, mostly smooth
-                float finalAlpha = glow * n * vAlpha * 0.08; 
+                float finalAlpha = glow * n * vAlpha * 0.25; 
                 
                 if (finalAlpha < 0.005) discard;
-                gl_FragColor = vec4(vColor * 0.3, finalAlpha);
+                gl_FragColor = vec4(vColor * 1.5, finalAlpha);
             }
         `,
         blending: THREE.AdditiveBlending,
@@ -215,10 +215,10 @@ function initGalaxy() {
                 
                 float turb = sin(r * 20.0 - time * 3.0) * 0.1 + 0.9;
                 
-                float intensity = diskFade * turb * 0.6 + centerFade * 1.5;
+                float intensity = diskFade * turb * 0.3 + centerFade * 0.5;
                 
                 if (intensity < 0.01) discard;
-                gl_FragColor = vec4(color * intensity, intensity * 0.8);
+                gl_FragColor = vec4(color * intensity, intensity * 0.3);
             }
         `,
         transparent: true,
@@ -269,7 +269,7 @@ function initGalaxy() {
         let size = 2.5 + Math.random() * 3.5;
         
         if (isNuclear) {
-            colR = 1.0; colG = 0.9; colB = 0.5;
+            colR = 1.0; colG = 1.0; colB = 0.9;
             size = 6.0 + Math.random() * 4.0;
         } else {
             let edge = Math.min(1.0, r / 2000);
@@ -277,7 +277,7 @@ function initGalaxy() {
             colB = 0.55 - edge * 0.4;
         }
         
-        if (r < 400) size *= 2.0;
+        if (r < 400) size *= 4.0;
 
         addGlowingParticle(x, y, z, colR, colG, colB, size);
     }
@@ -328,13 +328,13 @@ function initGalaxy() {
             if (mixR < 0.2) {
                 rColor = 1.0; gColor = 0.9; bColor = 0.6;
             } else if (mixR < 0.4) {
-                rColor = 1.0; gColor = 0.85; bColor = 0.65;
+                rColor = 0.95; gColor = 0.85; bColor = 0.75;
             } else if (mixR < 0.6) {
-                rColor = 0.9; gColor = 0.8; bColor = 0.75;
+                rColor = 0.8; gColor = 0.8; bColor = 0.95;
             } else if (mixR < 0.8) {
-                rColor = 0.7; gColor = 0.7; bColor = 0.85;
+                rColor = 0.5; gColor = 0.6; bColor = 1.0;
             } else {
-                rColor = 0.5; gColor = 0.55; bColor = 0.9;
+                rColor = 0.3; gColor = 0.4; bColor = 1.0;
             }
             
         } else {
@@ -412,9 +412,9 @@ function initGalaxy() {
                 float dist = length(uv);
                 if (dist > 0.5) discard;
                 float gauss = exp(-dist * dist * 20.0);
-                float alpha = gauss * (0.6 + 0.3 * vRand);
+                float alpha = gauss * (1.2 + 0.5 * vRand);
                 if (alpha < 0.01) discard;
-                gl_FragColor = vec4(vColor * 1.5, alpha);
+                gl_FragColor = vec4(vColor * 3.0, alpha);
             }
         `,
         blending: THREE.AdditiveBlending,
@@ -469,7 +469,7 @@ function initGalaxy() {
                 vColor = customColor;
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
-                gl_PointSize = size * (3000.0 / distance); 
+                gl_PointSize = size * (6000.0 / distance); 
                 gl_Position = projectionMatrix * mvPosition;
             }
         `,
@@ -479,8 +479,7 @@ function initGalaxy() {
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
-                float alpha = pow(1.0 - (dist * 2.0), 2.0);
-                gl_FragColor = vec4(0.0, 0.0, 0.0, alpha);
+                gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
             }
         `,
         blending: THREE.NormalBlending,
@@ -690,7 +689,7 @@ async function loadStars() {
 
         controls.target.set(galacticCenter.x, galacticCenter.y, galacticCenter.z);
         let gc = galacticCenter;
-        camera.position.set(gc.x - 12000, gc.y + 3000, gc.z + 12000);
+        camera.position.set(gc.x - 4000, gc.y + 12000, gc.z + 16000);
 
         // Auto-select a valid star for routing — only real catalog stars within jump range
         if (starData.length > 1) {
