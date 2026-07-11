@@ -927,32 +927,67 @@ toggleBtn.addEventListener('click', () => {
     panel.classList.toggle('collapsed');
     toggleBtn.innerText = panel.classList.contains('collapsed') ? 'O' : '_';
 });
+toggleBtn.addEventListener('touchstart', (e) => {
+    e.stopPropagation();
+    panel.classList.toggle('collapsed');
+    toggleBtn.innerText = panel.classList.contains('collapsed') ? 'O' : '_';
+});
 
-// Drag Logic
+// Drag Logic (desktop mouse + mobile touch)
 const header = document.getElementById('panel-header');
 let isDragging = false;
 let offsetX = 0;
 let offsetY = 0;
 
-header.addEventListener('mousedown', (e) => {
-    if(e.target === toggleBtn) return;
+function isMobile() {
+    return window.innerWidth <= 600;
+}
+
+function getClientPos(e) {
+    if (e.touches && e.touches.length > 0) {
+        return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+    return { x: e.clientX, y: e.clientY };
+}
+
+function onDragStart(e) {
+    if (e.target === toggleBtn) return;
+    if (isMobile()) return; // Don't drag on mobile — panel is bottom-fixed
     isDragging = true;
     const rect = panel.getBoundingClientRect();
-    offsetX = e.clientX - rect.left;
-    offsetY = e.clientY - rect.top;
-});
+    const pos = getClientPos(e);
+    offsetX = pos.x - rect.left;
+    offsetY = pos.y - rect.top;
+}
 
-document.addEventListener('mousemove', (e) => {
+function onDragMove(e) {
     if (!isDragging) return;
-    // Keep panel within screen bounds mostly
-    let x = e.clientX - offsetX;
-    let y = e.clientY - offsetY;
+    const pos = getClientPos(e);
+    let x = pos.x - offsetX;
+    let y = pos.y - offsetY;
     panel.style.left = x + 'px';
     panel.style.top = y + 'px';
-});
+}
 
-document.addEventListener('mouseup', () => {
+function onDragEnd() {
     isDragging = false;
+}
+
+header.addEventListener('mousedown', onDragStart);
+document.addEventListener('mousemove', onDragMove);
+document.addEventListener('mouseup', onDragEnd);
+
+// Touch support for drag
+header.addEventListener('touchstart', onDragStart, { passive: false });
+document.addEventListener('touchmove', onDragMove, { passive: false });
+document.addEventListener('touchend', onDragEnd);
+
+// Reset inline drag styles on resize (prevents mobile layout breakage)
+window.addEventListener('resize', () => {
+    if (isMobile()) {
+        panel.style.left = '';
+        panel.style.top = '';
+    }
 });
 
 // Star Interaction and Flight Logic
