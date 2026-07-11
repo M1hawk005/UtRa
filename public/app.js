@@ -188,11 +188,11 @@ function initGalaxy() {
         Math.sin(ngpDec)
     );
 
-    const bhGeometry = new THREE.PlaneGeometry(1500, 1500);
+    const bhGeometry = new THREE.PlaneGeometry(800, 800);
     const bhMaterial = new THREE.ShaderMaterial({
         uniforms: {
             time: { value: 0.0 },
-            color: { value: new THREE.Color(0xff8833) }
+            color: { value: new THREE.Color(0xffaa55) }
         },
         vertexShader: `
             varying vec2 vUv;
@@ -210,15 +210,16 @@ function initGalaxy() {
                 float r = length(uv);
                 if (r > 0.5) discard;
                 
-                float angle = atan(uv.y, uv.x) + r * 30.0 - time * 5.0;
-                float spiral = sin(angle * 12.0) * 0.5 + 0.5;
+                float centerFade = exp(-r * r * 40.0);
+                float diskFade = pow(1.0 - r * 2.0, 2.0);
                 
-                if (r < 0.03) {
-                    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-                } else {
-                    float intensity = pow(1.0 - (r * 2.0), 3.0) * spiral;
-                    gl_FragColor = vec4(color * intensity * 0.8, intensity);
-                }
+                float angle = atan(uv.y, uv.x);
+                float turb = sin(angle * 3.0 + r * 20.0 - time * 3.0) * 0.3 + 0.7;
+                
+                float intensity = diskFade * turb * 0.6 + centerFade * 1.5;
+                
+                if (intensity < 0.01) discard;
+                gl_FragColor = vec4(color * intensity, intensity * 0.8);
             }
         `,
         transparent: true,
@@ -265,19 +266,19 @@ function initGalaxy() {
         let z = r * Math.cos(phi) * 0.6; 
         
         let isNuclear = (Math.random() < 0.1 && r < 300);
-        let colR = 1.0, colG = 0.8, colB = 0.4;
-        let size = 1.5 + Math.random() * 2.5;
+        let colR = 1.0, colG = 0.85, colB = 0.5;
+        let size = 2.5 + Math.random() * 3.5;
         
         if (isNuclear) {
-            colR = 1.0; colG = 0.9; colB = 0.7;
-            size = 3.0 + Math.random() * 2.0;
+            colR = 1.0; colG = 0.95; colB = 0.75;
+            size = 5.0 + Math.random() * 4.0;
         } else {
             let edge = Math.min(1.0, r / 2000);
-            colG = 0.8 - edge * 0.3;
-            colB = 0.4 - edge * 0.3;
+            colG = 0.85 - edge * 0.3;
+            colB = 0.5 - edge * 0.35;
         }
         
-        if (r < 400) size *= 1.5;
+        if (r < 400) size *= 2.0;
 
         addGlowingParticle(x, y, z, colR, colG, colB, size);
     }
@@ -299,7 +300,7 @@ function initGalaxy() {
         
         let x, y, z;
         let rColor, gColor, bColor;
-        let size = Math.random() * 1.5 + 0.5;
+        let size = Math.random() * 2.0 + 0.8;
 
         if (isThin) {
             let thetaSpiral = Math.log(r / aConst) / bConst;
@@ -398,7 +399,7 @@ function initGalaxy() {
                 vRand = fract(sin(dot(position.xyz, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
-                gl_PointSize = size * (3000.0 / distance); 
+                gl_PointSize = size * (12000.0 / distance); 
                 gl_Position = projectionMatrix * mvPosition;
             }
         `,
@@ -409,11 +410,11 @@ function initGalaxy() {
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
-                float glow = exp(-dist * dist * 15.0);
-                float sparkle = 0.8 + 0.4 * vRand;
-                float haze = pow(1.0 - (dist * 2.0), 3.0) * 0.04;
-                float finalAlpha = glow * sparkle * 0.7 + haze;
-                gl_FragColor = vec4(vColor * finalAlpha * 0.6, finalAlpha);
+                float gauss = exp(-dist * dist * 12.0);
+                float sparkle = 0.7 + 0.5 * vRand;
+                float haze = pow(1.0 - (dist * 2.0), 2.0) * 0.15;
+                float finalAlpha = gauss * sparkle * 1.2 + haze;
+                gl_FragColor = vec4(vColor * finalAlpha, finalAlpha);
             }
         `,
         blending: THREE.AdditiveBlending,
@@ -490,6 +491,72 @@ function initGalaxy() {
     const dustMesh = new THREE.Points(dGeo, dMat);
     dustMesh.renderOrder = 1; // render after galaxy particles to darken them
     galaxyMesh.add(dustMesh); // inherently rotates with the galaxy
+
+    // 4. Diffuse Galaxy Halo — bright glow like Andromeda's visible halo
+    const haloCount = 8000;
+    const hPos = new Float32Array(haloCount * 3);
+    const hCol = new Float32Array(haloCount * 3);
+    const hSize = new Float32Array(haloCount);
+
+    for (let i = 0; i < haloCount; i++) {
+        let r = Math.pow(Math.random(), 0.8) * maxR * 1.4;
+        let theta = Math.random() * Math.PI * 2;
+        let phi = Math.acos((Math.random() * 2) - 1);
+        
+        let flatten = 1.0 / (1.0 + r * 0.0002);
+        
+        hPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+        hPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        hPos[i * 3 + 2] = r * Math.cos(phi) * flatten * 200;
+        
+        let mix = Math.min(1.0, r / (maxR * 0.7));
+        hCol[i * 3] = 0.6 - mix * 0.4;
+        hCol[i * 3 + 1] = 0.6 - mix * 0.4;
+        hCol[i * 3 + 2] = 0.6 - mix * 0.3;
+        
+        hSize[i] = 200 + Math.random() * 400;
+    }
+
+    const hGeo = new THREE.BufferGeometry();
+    hGeo.setAttribute('position', new THREE.BufferAttribute(hPos, 3));
+    hGeo.setAttribute('customColor', new THREE.BufferAttribute(hCol, 3));
+    hGeo.setAttribute('size', new THREE.BufferAttribute(hSize, 1));
+
+    const hMat = new THREE.ShaderMaterial({
+        vertexShader: `
+            attribute float size;
+            attribute vec3 customColor;
+            varying vec3 vColor;
+            void main() {
+                vColor = customColor;
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                float distance = -mvPosition.z;
+                gl_PointSize = size * (8000.0 / distance);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vColor;
+            void main() {
+                vec2 uv = gl_PointCoord.xy - vec2(0.5);
+                float dist = length(uv);
+                if (dist > 0.5) discard;
+                float glow = exp(-dist * dist * 8.0);
+                float alpha = glow * 0.2;
+                if (alpha < 0.01) discard;
+                gl_FragColor = vec4(vColor, alpha);
+            }
+        `,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        transparent: true
+    });
+
+    const haloMesh = new THREE.Points(hGeo, hMat);
+    haloMesh.position.copy(galacticCenter);
+    haloMesh.lookAt(galacticCenter.clone().add(galacticNorth));
+    scene.add(haloMesh);
+    scene.userData.haloMesh = haloMesh;
 
     const ringGeo = new THREE.RingGeometry(1.5, 2.0, 32);
     const ringMat = new THREE.MeshBasicMaterial({ 
@@ -956,7 +1023,10 @@ function animate() {
         scene.userData.galaxyMesh.rotation.z -= 0.0002;
     }
     if (scene.userData.nebulaMesh) {
-        scene.userData.nebulaMesh.rotation.z -= 0.0002;
+        scene.userData.nebulaMesh.rotation.z -= 0.00015;
+    }
+    if (scene.userData.haloMesh) {
+        scene.userData.haloMesh.rotation.z -= 0.0001;
     }
     
     if (isFlying) {
