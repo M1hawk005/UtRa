@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>UtRa Navigation System // TACTICAL</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -13,7 +13,7 @@
     <div id="ui-panel">
         <div class="panel-header" id="panel-header">
             <h1 class="drag-handle">UTRA_NAV_SYS_v1</h1>
-            <button id="toggle-panel">_</button>
+            <button id="toggle-panel" type="button" aria-label="Collapse navigation panel" aria-expanded="true">_</button>
         </div>
         
         <div id="panel-content">
@@ -25,7 +25,7 @@
             </div>
             <div class="input-group">
                 <label for="end">TARGET_NODE</label>
-                <input type="text" id="end" value="HIP 611" required>
+                <input type="text" id="end" value="" required>
             </div>
             <div class="input-group row">
                 <div>
@@ -44,12 +44,23 @@
             <div id="error-message" class="error hidden"></div>
             <div id="success-message">
                 <h3>// TELEMETRY_DATA</h3>
-                <p>TOT_DISTANCE <span id="res-dist" class="highlight"></span></p>
-                <p>OBS_TIME (YRS) <span id="res-obs"></span></p>
-                <p>SHP_TIME (YRS) <span id="res-ship" class="highlight"></span></p>
+                <div class="route-summary" aria-label="Route summary">
+                    <p><span>TOT_DISTANCE</span><strong id="res-dist" class="highlight"></strong></p>
+                    <p><span>OBS_TIME (YRS)</span><strong id="res-obs"></strong></p>
+                    <p><span>SHP_TIME (YRS)</span><strong id="res-ship" class="highlight"></strong></p>
+                </div>
+
+                <div class="hop-controls" aria-label="Route hop navigation">
+                    <button id="btn-prev-hop" type="button" aria-label="Focus previous route hop">&#8592;</button>
+                    <div class="hop-status" aria-live="polite">
+                        <span id="hop-progress">HOP 0 / 0</span>
+                        <span id="hop-current">NO ROUTE LOCK</span>
+                    </div>
+                    <button id="btn-next-hop" type="button" aria-label="Focus next route hop">&#8594;</button>
+                </div>
                 
                 <h3 class="mt-10">// WAYPOINT_SEQ</h3>
-                <ul id="hop-list"></ul>
+                <ol id="hop-list" aria-label="Route waypoints"></ol>
             </div>
         </div>
         </div>
@@ -59,6 +70,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <!-- Custom App Logic -->
-    <script src="app.js?v=8"></script>
+    <script src="app.js?v=10"></script>
 </body>
 </html>

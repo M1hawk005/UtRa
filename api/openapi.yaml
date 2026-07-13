@@ -1,0 +1,278 @@
+openapi: 3.1.0
+info:
+  title: UtRa Navigation API
+  version: v1
+  description: |
+    Frontend-agnostic stellar catalog and route-planning API. The unversioned
+    `/api/stars` and `/api/path` operations are compatibility endpoints.
+    Every GET operation also supports HEAD with identical status and headers
+    and no response body. Their method errors advertise `Allow: GET, HEAD`.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/stars:
+    get:
+      summary: List stars for legacy reference clients
+      deprecated: true
+      responses:
+        "200":
+          description: Compact legacy star records.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LegacyStar"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /api/path:
+    get:
+      summary: Calculate a route using the legacy query contract
+      deprecated: true
+      description: |
+        Invalid or omitted `speed` silently uses 0.99. Distance must be finite,
+        greater than zero, and no greater than 500 parsecs. Errors are plain text.
+      parameters:
+        - name: start
+          in: query
+          required: true
+          schema: { type: string }
+        - name: end
+          in: query
+          required: true
+          schema: { type: string }
+        - name: dist
+          in: query
+          required: true
+          schema:
+            type: number
+            exclusiveMinimum: 0
+            maximum: 500
+        - name: speed
+          in: query
+          required: false
+          schema:
+            type: number
+            exclusiveMinimum: 0
+            exclusiveMaximum: 1
+            default: 0.99
+      responses:
+        "200":
+          description: Calculated route.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Route"
+        "400":
+          description: Invalid distance.
+          content:
+            text/plain:
+              schema: { type: string }
+        "404":
+          description: A star was not found or the route is unreachable.
+          content:
+            text/plain:
+              schema: { type: string }
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /.well-known/utra:
+    get:
+      summary: Discover this UtRa service
+      responses:
+        "200":
+          description: Runtime service capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /api/v1/capabilities:
+    get:
+      summary: Get runtime service capabilities
+      responses:
+        "200":
+          description: Runtime service capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /api/v1/routes:
+    post:
+      summary: Calculate a stellar route
+      description: |
+        Accepts exactly one JSON object. Unknown fields and trailing JSON values
+        are rejected. The entire HTTP request body is limited to 10 KiB.
+      x-max-body-bytes: 10240
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouteRequest"
+      responses:
+        "200":
+          description: Calculated route and relativistic travel times in years.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Route"
+        "400":
+          description: Invalid JSON or request fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: A star or reachable route was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "413":
+          description: Request body exceeds 10 KiB.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /healthz:
+    get:
+      summary: Report process liveness
+      responses:
+        "200":
+          description: The HTTP process is live.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /readyz:
+    get:
+      summary: Report readiness of the startup-loaded dataset
+      responses:
+        "200":
+          description: The immutable runtime dataset was loaded at startup.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+components:
+  responses:
+    MethodNotAllowed:
+      description: The endpoint does not support this HTTP method. GET operations return `Allow: GET, HEAD`; other operations advertise their sole supported method.
+      headers:
+        Allow:
+          required: true
+          schema: { type: string }
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: method_not_allowed
+              message: method not allowed
+  schemas:
+    LegacyStar:
+      type: object
+      additionalProperties: false
+      required: [n, x, y, z, s, m]
+      properties:
+        n: { type: string, description: Star name }
+        x: { type: number, description: Cartesian X coordinate in parsecs }
+        y: { type: number, description: Cartesian Y coordinate in parsecs }
+        z: { type: number, description: Cartesian Z coordinate in parsecs }
+        s: { type: string, description: Stellar spectrum }
+        m: { type: number, description: Absolute magnitude }
+    RouteRequest:
+      type: object
+      additionalProperties: false
+      required: [start, end, max_jump_pc, speed_c]
+      properties:
+        start:
+          type: string
+          minLength: 1
+        end:
+          type: string
+          minLength: 1
+        max_jump_pc:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 500
+        speed_c:
+          type: number
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1
+    Hop:
+      type: object
+      additionalProperties: false
+      required: [name, dist_pc, obs_time, ship_time]
+      properties:
+        name: { type: string }
+        dist_pc: { type: number, minimum: 0 }
+        obs_time: { type: number, minimum: 0, description: Observer time in years }
+        ship_time: { type: number, minimum: 0, description: Ship proper time in years }
+    Route:
+      type: object
+      additionalProperties: false
+      required: [hops, total_dist_pc, total_obs_time, total_ship_time]
+      properties:
+        hops:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Hop"
+        total_dist_pc: { type: number, minimum: 0 }
+        total_obs_time: { type: number, minimum: 0 }
+        total_ship_time: { type: number, minimum: 0 }
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required: [name, version, capabilities, dataset_size]
+      properties:
+        name: { type: string, const: UtRa Navigation API }
+        version: { type: string, const: v1 }
+        capabilities:
+          type: array
+          items:
+            type: string
+            enum: [routing, stars]
+        dataset_size: { type: integer, minimum: 0 }
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: ok }
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status, dataset_size]
+      properties:
+        status: { type: string, const: ready }
+        dataset_size: { type: integer, minimum: 0 }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
