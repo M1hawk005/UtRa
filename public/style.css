@@ -5,6 +5,9 @@
     --text-primary: #ffffff;
     --text-secondary: #cccccc;
     --font-mono: 'Share Tech Mono', 'Courier New', Courier, monospace;
+    --neon-cyan: #55f6ff;
+    --neon-amber: #ffc45c;
+    --glass: rgba(5, 14, 22, 0.78);
 }
 
 * {
@@ -27,7 +30,11 @@ body {
     width: 100vw;
     height: 100vh;
     z-index: 1;
+    touch-action: none;
+    overscroll-behavior: none;
 }
+
+#canvas-container canvas { touch-action: none; }
 
 /* Tactical UI Panel */
 #ui-panel {
@@ -36,8 +43,11 @@ body {
     left: 20px;
     width: 350px;
     z-index: 10;
-    background: var(--panel-bg);
-    border: 2px solid var(--border);
+    background: var(--glass);
+    border: 1px solid rgba(85, 246, 255, 0.48);
+    box-shadow: 0 0 24px rgba(0, 229, 255, 0.12), inset 0 0 30px rgba(0, 125, 170, 0.05);
+    backdrop-filter: blur(14px) saturate(125%);
+    -webkit-backdrop-filter: blur(14px) saturate(125%);
     padding: 1.5rem;
     display: flex;
     flex-direction: column;
@@ -82,8 +92,8 @@ body {
 
 /* Toggle Button */
 #toggle-panel {
-    width: 30px;
-    height: 30px;
+    width: 44px;
+    height: 44px;
     background: transparent;
     border: 1px solid var(--border);
     color: var(--border);
@@ -161,6 +171,16 @@ button:hover {
     color: var(--bg);
 }
 
+button:focus-visible, input:focus-visible, a:focus-visible {
+    outline: 2px solid var(--neon-amber);
+    outline-offset: 3px;
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.35;
+}
+
 /* Results Section */
 #results {
     margin-top: 2rem;
@@ -184,7 +204,7 @@ button:hover {
 h3 {
     font-size: 1rem;
     font-weight: 400;
-    color: var(--text-secondary);
+    color: var(--neon-cyan);
     margin-bottom: 0.8rem;
     text-transform: uppercase;
     letter-spacing: 1px;
@@ -204,29 +224,115 @@ p {
     font-weight: bold;
 }
 
-/* Hop List */
-ul {
+/* Route telemetry and hop rail */
+.route-summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.45rem;
+}
+
+.route-summary p {
+    min-width: 0;
+    padding: 0.55rem;
+    flex-direction: column;
+    gap: 0.2rem;
+    border: 1px solid rgba(85, 246, 255, 0.2);
+    background: rgba(0, 210, 255, 0.045);
+}
+
+.route-summary p span { color: var(--text-secondary); font-size: 0.66rem; }
+.route-summary strong { color: var(--neon-amber); font-weight: 400; }
+
+.hop-controls {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr) 48px;
+    align-items: stretch;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+}
+
+.hop-controls button {
+    width: 48px;
+    min-height: 48px;
+    margin: 0;
+    padding: 0;
+    color: var(--neon-cyan);
+    border-color: rgba(85, 246, 255, 0.65);
+    font-size: 1.35rem;
+}
+
+.hop-status {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-block: 1px solid rgba(85, 246, 255, 0.28);
+}
+
+#hop-progress { color: var(--neon-amber); letter-spacing: 0.12em; }
+#hop-current { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 0.72rem; }
+
+#hop-list {
     list-style: none;
     font-size: 0.85rem;
     max-height: 250px;
     overflow-y: auto;
     border: 1px solid rgba(255,255,255,0.2);
     padding: 0.5rem;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
 }
 
-ul::-webkit-scrollbar {
+#hop-list::-webkit-scrollbar {
     width: 4px;
 }
-ul::-webkit-scrollbar-thumb {
+#hop-list::-webkit-scrollbar-thumb {
     background: var(--border);
 }
 
-ul li {
-    padding: 0.4rem 0;
+#hop-list li {
+    padding: 0;
     border-bottom: 1px dotted rgba(255,255,255,0.2);
-    display: flex;
-    justify-content: space-between;
 }
+
+.hop-button {
+    width: 100%;
+    min-height: 44px;
+    margin: 0;
+    padding: 0.55rem;
+    border: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    text-align: left;
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+}
+
+.hop-button .hop-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hop-button .hop-distance { flex: none; color: var(--text-secondary); }
+.hop-button[aria-current="step"] { color: #001014; background: var(--neon-cyan); box-shadow: 0 0 16px rgba(85, 246, 255, 0.35); }
+
+#star-details {
+    position: absolute;
+    right: 20px;
+    top: 20px;
+    z-index: 12;
+    width: min(320px, calc(100vw - 40px));
+    padding: 1rem;
+    background: rgba(4, 12, 20, 0.88);
+    border: 1px solid rgba(255, 196, 92, 0.7);
+    box-shadow: 0 0 24px rgba(255, 170, 50, 0.12);
+    backdrop-filter: blur(12px);
+}
+
+#star-details h2 { color: var(--neon-amber); font-size: 1rem; overflow-wrap: anywhere; }
+#star-details dl { display: grid; grid-template-columns: 1fr auto; gap: 0.35rem 1rem; margin-top: 0.75rem; font-size: 0.8rem; }
+#star-details dt { color: var(--text-secondary); }
+#star-details dd { text-align: right; color: white; }
+#star-details a { display: inline-flex; align-items: center; min-height: 44px; margin-top: 0.8rem; color: var(--neon-cyan); }
 
 /* Mobile Responsive UI */
 @media (max-width: 600px) {
@@ -240,7 +346,7 @@ ul li {
         border-right: none;
         border-bottom: none;
         border-top: 2px solid var(--border);
-        padding: 0;
+        padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     }
 
     #ui-panel.collapsed {
@@ -268,6 +374,8 @@ ul li {
         overflow-y: auto;
         max-height: calc(50vh - 48px);
         -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
+        overscroll-behavior: contain;
     }
 
     .wireframe-box {
@@ -285,6 +393,7 @@ ul li {
     input {
         font-size: 1.1rem;
         padding: 0.4rem 0;
+        min-height: 44px;
     }
 
     .row {
@@ -318,7 +427,7 @@ ul li {
         margin-bottom: 0.3rem;
     }
 
-    ul {
+    #hop-list {
         display: flex;
         flex-direction: row;
         overflow-x: auto;
@@ -327,16 +436,29 @@ ul li {
         gap: 0.5rem;
         padding: 0.3rem;
         max-height: 100px;
+        touch-action: pan-x;
+        overscroll-behavior: contain;
     }
 
-    ul li {
-        flex-direction: column;
+    #hop-list li {
         border-bottom: none;
         border-right: 1px dotted rgba(255,255,255,0.2);
         padding-right: 0.8rem;
         min-width: 160px;
         font-size: 0.75rem;
         padding: 0.3rem 0.8rem 0.3rem 0;
+    }
+
+    .hop-button { min-width: 160px; }
+
+    #star-details {
+        top: max(12px, env(safe-area-inset-top));
+        right: max(12px, env(safe-area-inset-right));
+        width: min(300px, calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+        max-height: calc(50vh - 24px - env(safe-area-inset-top));
+        overflow-y: auto;
+        touch-action: pan-y;
+        overscroll-behavior: contain;
     }
 
     .error {
