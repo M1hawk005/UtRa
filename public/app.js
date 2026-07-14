@@ -16,7 +16,12 @@ document.getElementById('canvas-container').appendChild(renderer.domElement);
 const controls = new THREE.OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
+controls.rotateSpeed = 0.18;
+controls.zoomSpeed = 1.15;
+controls.panSpeed = 0.95;
+controls.screenSpacePanning = true;
 controls.maxDistance = Infinity;
+controls.minDistance = calculateMinDistance(1.0, 0.55, camera.fov);
 
 // Variables
 let starsGeometry;
@@ -29,7 +34,51 @@ let focusRing; // Tactical ring to highlight selected star
 let galaxyFrameDistance = Infinity;
 let currentRouteHops = [];
 let resolvedRouteStars = [];
+let hopToMarkerIndex = [];
 let currentHopIndex = -1;
+let currentSelectedStarIndex = -1;
+let interiorSky;
+let overviewSky, overviewSkyMaterial;
+let detailGroup = new THREE.Group();
+let solMesh, starMesh;
+
+// Navigation flight variables
+let flightSourceNode = new THREE.Vector3();
+let flightSourceCam = new THREE.Vector3();
+let flightSourceMapCam = new THREE.Vector3();
+let flightSourceMapTarget = new THREE.Vector3();
+let flightTargetMapCam = new THREE.Vector3();
+let flightTargetMapTarget = new THREE.Vector3();
+
+function highlightStar(idx) {
+    if (!starsGeometry || currentSelectedStarIndex === idx) return;
+    const isSelectedAttr = starsGeometry.getAttribute('isSelected');
+    if (currentSelectedStarIndex >= 0) {
+        isSelectedAttr.setX(currentSelectedStarIndex, 0.0);
+    }
+    currentSelectedStarIndex = idx;
+    if (currentSelectedStarIndex >= 0) {
+        isSelectedAttr.setX(currentSelectedStarIndex, 1.0);
+    }
+    isSelectedAttr.needsUpdate = true;
+}
+
+
+const _galaxyTarget = new THREE.Vector3();
+const _galaxyWorldScale = new THREE.Vector3();
+const _galaxyDiskX = new THREE.Vector3();
+const _galaxyDiskY = new THREE.Vector3();
+const _galaxyDiskNormal = new THREE.Vector3();
+const _galaxyViewOut = new THREE.Vector3();
+const _galaxyFrameOutput = { target: _galaxyTarget, diskY: _galaxyDiskY, viewOut: _galaxyViewOut, distance: 0 };
+
+const _scratchVecA = new THREE.Vector3();
+const _scratchVecB = new THREE.Vector3();
+const _scratchVecC = new THREE.Vector3();
+const _starBaseColor = new THREE.Color();
+const _skyResOutput = { opacity: 0, lodBias: 0 };
+
+let flightTransitionState = createTransition({ duration: 900, fadeFraction: 0.25 });
 
 // A repeatable, inexpensive random source keeps the galaxy stable between loads.
 function galaxyRandom(seed = 0x6d696c6b) {
@@ -55,27 +104,28 @@ function getGalaxyFrame() {
 
     // The generated disk is galaxy-local XY. Frame only that geometry, not the
     // separately rendered catalog/background stars or child-object bounds.
-    const target = galaxy.getWorldPosition(new THREE.Vector3());
-    const worldScale = galaxy.getWorldScale(new THREE.Vector3());
+    galaxy.getWorldPosition(_galaxyTarget);
+    galaxy.getWorldScale(_galaxyWorldScale);
     const radius = galaxy.geometry.boundingSphere.radius
-        * Math.max(Math.abs(worldScale.x), Math.abs(worldScale.y), Math.abs(worldScale.z));
+        * Math.max(Math.abs(_galaxyWorldScale.x), Math.abs(_galaxyWorldScale.y), Math.abs(_galaxyWorldScale.z));
 
-    const diskX = new THREE.Vector3(1, 0, 0).transformDirection(galaxy.matrixWorld);
-    const diskY = new THREE.Vector3(0, 1, 0).transformDirection(galaxy.matrixWorld);
-    const diskNormal = new THREE.Vector3(0, 0, 1).transformDirection(galaxy.matrixWorld);
+    _galaxyDiskX.set(1, 0, 0).transformDirection(galaxy.matrixWorld);
+    _galaxyDiskY.set(0, 1, 0).transformDirection(galaxy.matrixWorld);
+    _galaxyDiskNormal.set(0, 0, 1).transformDirection(galaxy.matrixWorld);
 
     // View along a vector that is inclined ~60 degrees from the normal
     // for an elliptical disk appearance with a diagonal/horizontal major axis.
-    const viewOut = diskNormal.clone().multiplyScalar(0.45)
-        .addScaledVector(diskY, -0.75)
-        .addScaledVector(diskX, 0.45)
+    _galaxyViewOut.copy(_galaxyDiskNormal).multiplyScalar(0.45)
+        .addScaledVector(_galaxyDiskY, -0.75)
+        .addScaledVector(_galaxyDiskX, 0.45)
         .normalize();
     const verticalHalfFov = THREE.MathUtils.degToRad(camera.fov * 0.5);
     const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * camera.aspect);
     const limitingHalfFov = Math.min(verticalHalfFov, horizontalHalfFov);
     const distance = radius / Math.sin(limitingHalfFov) * 1.35; // increased margin
 
-    return { target, diskY, viewOut, distance };
+    _galaxyFrameOutput.distance = distance;
+    return _galaxyFrameOutput;
 }
 
 function updateGalaxyZoomLimit() {
@@ -175,6 +225,9 @@ function createNebulae() {
     nGeo.setAttribute('alphaMask', new THREE.BufferAttribute(nAlpha, 1));
 
     const nMat = new THREE.ShaderMaterial({
+        uniforms: {
+            uTransitionOpacity: { value: 1.0 }
+        },
         vertexShader: `
             attribute float size;
             attribute vec3 customColor;
@@ -182,20 +235,27 @@ function createNebulae() {
             varying vec3 vColor;
             varying float vAlpha;
             varying vec2 vUvOffset;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vColor = customColor;
                 vAlpha = alphaMask;
                 vUvOffset = position.xy * 0.05;
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
+                vCameraDist = length(mvPosition.xyz);
+                vGalacticDist = length(cameraPosition - modelMatrix[3].xyz);
                 gl_PointSize = clamp(size * (4600.0 / distance), 1.0, 30.0);
                 gl_Position = projectionMatrix * mvPosition;
             }
         `,
         fragmentShader: `
+            uniform float uTransitionOpacity;
             varying vec3 vColor;
             varying float vAlpha;
             varying vec2 vUvOffset;
+            varying float vCameraDist;
+            varying float vGalacticDist;
 
             float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
             float noise(vec2 p) {
@@ -223,8 +283,11 @@ function createNebulae() {
                 float n = fbm(p) * 0.3 + 0.7; // dampened noise, mostly smooth
                 float finalAlpha = glow * n * vAlpha * 0.12;
 
+                float fade = smoothstep(150.0, 500.0, vCameraDist);
+                float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
+                finalAlpha *= fade * macroFade;
                 if (finalAlpha < 0.005) discard;
-                gl_FragColor = vec4(vColor * 0.75, finalAlpha);
+                gl_FragColor = vec4(vColor * 0.75, finalAlpha * uTransitionOpacity);
                 #include <tonemapping_fragment>
                 #include <encodings_fragment>
             }
@@ -268,6 +331,61 @@ function initGalaxy() {
         Math.cos(ngpDec) * Math.sin(ngpRA),
         Math.sin(ngpDec)
     );
+
+    const textureLoader = new THREE.TextureLoader();
+    const esoTexture = textureLoader.load('assets/milky-way-eso.webp');
+    esoTexture.encoding = THREE.sRGBEncoding;
+    esoTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+    const skyGeo = new THREE.SphereGeometry(50000, 64, 32);
+    skyGeo.scale(-1, 1, 1);
+    const skyMat = new THREE.MeshBasicMaterial({
+        map: esoTexture,
+        depthWrite: false,
+        depthTest: false,
+        fog: false,
+        transparent: true,
+        opacity: 0.0
+    });
+function patchSkyShader(shader) {
+    if (!shader.uniforms.uLodBias) {
+        shader.uniforms.uLodBias = { value: 0.0 };
+    }
+    if (!shader.fragmentShader.includes('uniform float uLodBias;')) {
+        shader.fragmentShader = shader.fragmentShader.replace(
+            '#include <map_pars_fragment>',
+            '#include <map_pars_fragment>\nuniform float uLodBias;'
+        );
+    }
+    shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        [
+            '#ifdef USE_MAP',
+            '\tvec4 texelColor = texture2D( map, vUv, uLodBias );',
+            '\ttexelColor = mapTexelToLinear( texelColor );',
+            '\tdiffuseColor *= texelColor;',
+            '#endif'
+        ].join('\n')
+    );
+}
+
+    skyMat.onBeforeCompile = (shader) => {
+        patchSkyShader(shader);
+        skyMat.userData.shader = shader;
+    };
+    interiorSky = new THREE.Mesh(skyGeo, skyMat);
+    interiorSky.renderOrder = -2;
+    interiorSky.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), galacticNorth);
+    scene.add(interiorSky);
+
+    const uiPanel = document.getElementById('panel-content');
+    const infoLine = document.createElement('div');
+    infoLine.id = 'sky-attribution';
+    infoLine.style.fontSize = '10px';
+    infoLine.style.marginTop = '10px';
+    infoLine.style.color = 'var(--text-dim)';
+    infoLine.innerHTML = `Interior sky: <a href="https://www.eso.org/public/images/eso0932a/" target="_blank" rel="noopener noreferrer" style="color:var(--highlight)">ESO/S. Brunier</a> | <span id="star-attribution"></span>`;
+    uiPanel.appendChild(infoLine);
 
     const bhGeometry = new THREE.PlaneGeometry(3500, 3500);
     const bhMaterial = new THREE.ShaderMaterial({
@@ -476,11 +594,15 @@ function initGalaxy() {
             attribute vec3 customColor;
             varying vec3 vColor;
             varying float vRand;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vColor = customColor;
                 vRand = fract(sin(dot(position.xyz, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
+                vCameraDist = length(mvPosition.xyz);
+                vGalacticDist = length(cameraPosition - modelMatrix[3].xyz);
                 gl_PointSize = clamp(size * (8200.0 / distance), 0.65, 18.0);
                 gl_Position = projectionMatrix * mvPosition;
             }
@@ -488,12 +610,17 @@ function initGalaxy() {
         fragmentShader: `
             varying vec3 vColor;
             varying float vRand;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
                 float gauss = exp(-dist * dist * 26.0);
                 float alpha = gauss * (0.45 + 0.32 * vRand);
+                float fade = smoothstep(150.0, 500.0, vCameraDist);
+                float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
+                alpha *= fade * macroFade;
                 if (alpha < 0.01) discard;
                 gl_FragColor = vec4(vColor * (0.85 + 0.65 * vRand), alpha);
                 #include <tonemapping_fragment>
@@ -556,22 +683,31 @@ function initGalaxy() {
             attribute float size;
             attribute vec3 customColor;
             varying vec3 vColor;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vColor = customColor;
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
+                vCameraDist = length(mvPosition.xyz);
+                vGalacticDist = length(cameraPosition - modelMatrix[3].xyz);
                 gl_PointSize = clamp(size * (2000.0 / distance), 1.0, 45.0);
                 gl_Position = projectionMatrix * mvPosition;
             }
         `,
         fragmentShader: `
             varying vec3 vColor;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
 
                 float alpha = pow(1.0 - (dist * 2.0), 2.0) * 0.15;
+                float fade = smoothstep(150.0, 500.0, vCameraDist);
+                float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
+                alpha *= fade * macroFade;
                 if (alpha < 0.002) discard;
                 gl_FragColor = vec4(0.0, 0.0, 0.0, alpha);
                 #include <tonemapping_fragment>
@@ -600,78 +736,197 @@ function initGalaxy() {
     focusRing = new THREE.Mesh(ringGeo, ringMat);
     focusRing.visible = false;
     scene.add(focusRing);
+
+    scene.add(detailGroup);
+
+    const hmiTexture = textureLoader.load('assets/sol-sdo-hmi.webp');
+    hmiTexture.encoding = THREE.sRGBEncoding;
+    const solGeo = new THREE.PlaneGeometry(2, 2);
+    const solMat = new THREE.ShaderMaterial({
+        uniforms: { map: { value: hmiTexture }, uTransitionOpacity: { value: 1.0 } },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                vec3 v0 = modelMatrix[0].xyz;
+                vec3 v1 = modelMatrix[1].xyz;
+                vec3 v2 = modelMatrix[2].xyz;
+                float scaleX = length(v0);
+                float scaleY = length(v1);
+
+                mat4 billboardMatrix = viewMatrix * modelMatrix;
+                billboardMatrix[0][0] = scaleX; billboardMatrix[0][1] = 0.0; billboardMatrix[0][2] = 0.0;
+                billboardMatrix[1][0] = 0.0; billboardMatrix[1][1] = scaleY; billboardMatrix[1][2] = 0.0;
+                billboardMatrix[2][0] = 0.0; billboardMatrix[2][1] = 0.0; billboardMatrix[2][2] = 1.0;
+
+                gl_Position = projectionMatrix * billboardMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D map;
+            uniform float uTransitionOpacity;
+            varying vec2 vUv;
+            void main() {
+                vec2 uv = vUv - 0.5;
+                float dist = length(uv);
+                if (dist > 0.49) discard;
+                vec4 texColor = texture2D(map, vUv);
+                float limb = 1.0 - pow(dist * 2.0, 4.0);
+                texColor.rgb *= 0.5 + 0.5 * limb;
+                gl_FragColor = vec4(texColor.rgb, uTransitionOpacity);
+            }
+        `,
+        transparent: true, depthTest: true, depthWrite: true, polygonOffset: true, polygonOffsetFactor: -1, blending: THREE.NormalBlending
+    });
+    solMesh = new THREE.Mesh(solGeo, solMat);
+    solMesh.visible = false;
+    detailGroup.add(solMesh);
+
+    const starDetailGeo = new THREE.SphereGeometry(1, 64, 64);
+    const starDetailMat = new THREE.ShaderMaterial({
+        uniforms: {
+            uColor: { value: new THREE.Color(1, 1, 1) },
+            uTime: { value: 0 },
+            uTransitionOpacity: { value: 1.0 },
+            uLimbDarkening: { value: 0.6 },
+            uGranulationContrast: { value: 0.2 },
+            uGranulationScale: { value: 30.0 }
+        },
+        vertexShader: `
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            varying vec3 vViewPosition;
+            void main() {
+                vNormal = normalMatrix * normal;
+                vPosition = position;
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                vViewPosition = -mvPosition.xyz;
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 uColor; uniform float uTime; uniform float uTransitionOpacity;
+            uniform float uLimbDarkening; uniform float uGranulationContrast; uniform float uGranulationScale;
+            varying vec3 vNormal; varying vec3 vPosition; varying vec3 vViewPosition;
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+            vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+            float snoise(vec3 v) {
+                const vec2  C = vec2(1.0/6.0, 1.0/3.0);
+                const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+                vec3 i  = floor(v + dot(v, C.yyy));
+                vec3 x0 = v - i + dot(i, C.xxx);
+                vec3 g = step(x0.yzx, x0.xyz);
+                vec3 l = 1.0 - g;
+                vec3 i1 = min(g.xyz, l.zxy); vec3 i2 = max(g.xyz, l.zxy);
+                vec3 x1 = x0 - i1 + C.xxx; vec3 x2 = x0 - i2 + C.yyy; vec3 x3 = x0 - D.yyy;
+                i = mod289(i);
+                vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0)) + i.y + vec4(0.0, i1.y, i2.y, 1.0)) + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+                float n_ = 0.142857142857; vec3 ns = n_ * D.wyz - D.xzx;
+                vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+                vec4 x_ = floor(j * ns.z); vec4 y_ = floor(j - 7.0 * x_);
+                vec4 x = x_ * ns.x + ns.yyyy; vec4 y = y_ * ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y);
+                vec4 b0 = vec4(x.xy, y.xy); vec4 b1 = vec4(x.zw, y.zw);
+                vec4 s0 = floor(b0) * 2.0 + 1.0; vec4 s1 = floor(b1) * 2.0 + 1.0;
+                vec4 sh = -step(h, vec4(0.0));
+                vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy; vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+                vec3 p0 = vec3(a0.xy, h.x); vec3 p1 = vec3(a0.zw, h.y); vec3 p2 = vec3(a1.xy, h.z); vec3 p3 = vec3(a1.zw, h.w);
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+                p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+                vec4 m = max(0.5 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m; return 105.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+            }
+            void main() {
+                vec3 p = normalize(vPosition);
+                vec3 n = normalize(vNormal); vec3 v = normalize(vViewPosition);
+                float ndotv = max(dot(n, v), 0.0);
+                float limb = mix(1.0, ndotv, uLimbDarkening);
+                float t = uTime * 0.05;
+                vec3 np = p * uGranulationScale;
+                float n1 = snoise(np + t); float n2 = snoise(np * 2.0 - t * 1.5); float n3 = snoise(np * 4.0 + t * 2.0);
+                float fbm = n1 * 0.5 + n2 * 0.25 + n3 * 0.125;
+                fbm = fbm * 0.5 + 0.5;
+                float granules = smoothstep(0.3, 0.7, fbm);
+                float faculae = snoise(p * 3.0 + t * 0.2) * 0.5 + 0.5;
+                float brightness = 1.0 - uGranulationContrast * (1.0 - granules) + faculae * 0.05;
+                vec3 finalColor = uColor * limb * brightness;
+                gl_FragColor = vec4(finalColor, uTransitionOpacity);
+                #include <tonemapping_fragment>
+                #include <encodings_fragment>
+            }
+        `,
+        transparent: true, depthTest: false
+    });
+    starMesh = new THREE.Mesh(starDetailGeo, starDetailMat);
+    starMesh.visible = false;
+    detailGroup.add(starMesh);
 }
 
 // GLSL Procedural Sun Shader replaces static canvas texture
 const vertexShader = `
+    uniform vec3 uGalacticCenter;
     attribute float size;
     attribute vec3 customColor;
+    attribute float isProcedural;
+    attribute float isSelected;
     varying vec3 vColor;
-    varying vec3 vPosition;
+    varying float vIsProcedural;
+    varying float vIsSelected;
+    varying float vGalacticDist;
+
     void main() {
         vColor = customColor;
-        vPosition = position;
+        vIsProcedural = isProcedural;
+        vIsSelected = isSelected;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vGalacticDist = length(cameraPosition - uGalacticCenter);
 
-        // Scale down size so stars don't look overly huge
-        float distance = -mvPosition.z;
-        float scaledSize = size * (200.0 / distance);
-        gl_PointSize = clamp(scaledSize, 1.5, 120.0);
-
+        float pointSize = clamp(size, 1.0, 4.0);
+        if (isSelected > 0.5) {
+            pointSize = 16.0;
+        }
+        gl_PointSize = pointSize;
         gl_Position = projectionMatrix * mvPosition;
     }
 `;
 
 const fragmentShader = `
     uniform vec3 color;
+    uniform float uSelectedPointOpacity;
+    uniform float uTransitionOpacity;
     varying vec3 vColor;
-    varying vec3 vPosition;
-
-    // Fast GLSL Pseudo-Random Noise
-    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    float noise(vec2 p) {
-        vec2 i = floor(p); vec2 f = fract(p);
-        vec2 u = f * f * (3.0 - 2.0 * f);
-        return mix(mix(hash(i), hash(i + vec2(1.0,0.0)), u.x),
-                   mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), u.x), u.y);
-    }
-    float fbm(vec2 p) {
-        float f = 0.0;
-        f += 0.5000 * noise(p); p = p * 2.02;
-        f += 0.2500 * noise(p); p = p * 2.03;
-        f += 0.1250 * noise(p); p = p * 2.01;
-        f += 0.0625 * noise(p);
-        return f;
-    }
+    varying float vIsProcedural;
+    varying float vIsSelected;
+    varying float vGalacticDist;
 
     void main() {
         vec2 uv = gl_PointCoord.xy - vec2(0.5);
         float dist = length(uv);
         if (dist > 0.5) discard;
 
-        float bodyRadius = 0.35;
-        vec3 finalColor = vec3(0.0);
         float alpha = 1.0;
+        vec3 finalColor = color * vColor;
 
-        if (dist < bodyRadius) {
-            // Solar Granulation Surface
-            // Use vPosition to offset noise so every star looks unique!
-            vec2 p = (uv * 15.0) + vPosition.xy * 0.1;
-            float n = fbm(p);
-
-            // Limb darkening
-            float limb = 1.0 - (dist / bodyRadius);
-            limb = pow(limb, 0.4);
-
-            finalColor = color * vColor * (0.5 + n * 0.8) * limb;
+        if (vIsSelected > 0.5) {
+            float core = pow(1.0 - (dist * 2.0), 4.0);
+            float glow = pow(1.0 - (dist * 2.0), 1.5);
+            alpha = (core * 0.8 + glow * 0.5) * uSelectedPointOpacity;
+            finalColor *= 1.2;
         } else {
-            // Corona Glow
-            float glow = 1.0 - ((dist - bodyRadius) / (0.5 - bodyRadius));
-            glow = pow(glow, 2.5);
-            finalColor = color * vColor;
-            alpha = glow;
-            if (alpha < 0.02) discard;
+            float psf = pow(1.0 - (dist * 2.0), 2.5);
+            alpha = psf;
         }
+
+        if (vIsProcedural > 0.5) {
+            float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
+            alpha *= macroFade;
+        }
+
+        alpha *= uTransitionOpacity;
+
+        if (alpha < 0.01) discard;
 
         gl_FragColor = vec4(finalColor, alpha);
         #include <tonemapping_fragment>
@@ -697,15 +952,185 @@ function getSpectralColor(spectrum) {
 
 
 
+function initOverviewSky() {
+    let overviewMaxPointSize = 64.0;
+    const gl = renderer.getContext();
+    if (gl) {
+        const range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
+        if (range && range.length === 2 && isFinite(range[1])) {
+            overviewMaxPointSize = range[1];
+        }
+    }
+
+    const { sources, smudges, companions } = generateOverviewDescriptors();
+    const total = sources.length + smudges.length + companions.length;
+
+    const pos = new Float32Array(total * 3);
+    const col = new Float32Array(total * 3);
+    const size = new Float32Array(total);
+    const alpha = new Float32Array(total);
+    const rot = new Float32Array(total);
+    const aspect = new Float32Array(total);
+    const classType = new Float32Array(total);
+
+    let idx = 0;
+    const addDesc = (d) => {
+        pos[idx * 3] = d.x * 50000;
+        pos[idx * 3 + 1] = d.y * 50000;
+        pos[idx * 3 + 2] = d.z * 50000;
+        col[idx * 3] = d.r;
+        col[idx * 3 + 1] = d.g;
+        col[idx * 3 + 2] = d.b;
+        size[idx] = d.size;
+        alpha[idx] = d.alpha;
+        rot[idx] = d.rotation;
+        aspect[idx] = d.aspect;
+        classType[idx] = d.classType;
+        idx++;
+    };
+
+    sources.forEach(addDesc);
+    smudges.forEach(addDesc);
+    companions.forEach(addDesc);
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('customColor', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    geo.setAttribute('aAlpha', new THREE.BufferAttribute(alpha, 1));
+    geo.setAttribute('aRotation', new THREE.BufferAttribute(rot, 1));
+    geo.setAttribute('aAspect', new THREE.BufferAttribute(aspect, 1));
+    geo.setAttribute('aClassType', new THREE.BufferAttribute(classType, 1));
+
+    overviewSkyMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uOpacity: { value: 0.0 },
+            uDpr: { value: renderer.getPixelRatio() },
+            uMaxPointSize: { value: overviewMaxPointSize }
+        },
+        vertexShader: `
+            attribute float aSize;
+            attribute vec3 customColor;
+            attribute float aAlpha;
+            attribute float aRotation;
+            attribute float aAspect;
+            attribute float aClassType;
+
+            uniform float uOpacity;
+            uniform float uDpr;
+            uniform float uMaxPointSize;
+
+            varying vec3 vColor;
+            varying float vAlpha;
+            varying float vRotation;
+            varying float vAspect;
+            varying float vClassType;
+            varying float vClampRatio;
+
+            void main() {
+                vColor = customColor;
+                vAlpha = aAlpha * uOpacity;
+                vRotation = aRotation;
+                vAspect = aAspect;
+                vClassType = aClassType;
+
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                gl_Position = projectionMatrix * mvPosition;
+
+                float reqSize = aSize * uDpr;
+                float clampedSize = min(reqSize, uMaxPointSize);
+                vClampRatio = clamp(clampedSize / max(reqSize, 0.0001), 0.0, 1.0);
+
+                gl_PointSize = clampedSize;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vColor;
+            varying float vAlpha;
+            varying float vRotation;
+            varying float vAspect;
+            varying float vClassType;
+            varying float vClampRatio;
+
+            void main() {
+                if (vAlpha < 0.001) discard;
+
+                vec2 uv = gl_PointCoord.xy - vec2(0.5);
+
+                float c = cos(vRotation);
+                float s = sin(vRotation);
+                mat2 matR = mat2(c, -s, s, c);
+                uv = matR * uv;
+
+                uv.y /= vAspect;
+
+                float dist = length(uv);
+                if (dist > 0.5) discard;
+
+                float intensity = 0.0;
+                if (vClassType < 0.5) {
+                    intensity = exp(-dist * dist * 12.0);
+                } else if (vClassType < 1.5) {
+                    intensity = exp(-dist * dist * 8.0);
+                } else {
+                    float r = dist;
+                    float core = exp(-r * 25.0);
+                    float disk = exp(-r * 8.0);
+                    float halo = exp(-r * 3.0);
+                    intensity = core * 0.35 + disk * 0.45 + halo * 0.2;
+                    intensity *= 1.0 - smoothstep(0.2, 0.5, r);
+
+                    if (vClampRatio < 1.0) {
+                        float comp = clamp(1.0 / (vClampRatio * vClampRatio), 1.0, 10.0);
+                        intensity *= comp;
+                    }
+                }
+
+                float finalAlpha = intensity * vAlpha;
+                if (finalAlpha < 0.001) discard;
+
+                gl_FragColor = vec4(vColor, finalAlpha);
+            }
+        `,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+    });
+
+    overviewSky = new THREE.Points(geo, overviewSkyMaterial);
+    overviewSky.renderOrder = -1;
+    scene.add(overviewSky);
+}
+
 // Load Stars
 async function loadStars() {
     try {
         initGalaxy(); // Spawn the Milky Way
+        initOverviewSky(); // Spawn the procedural background
         createNebulae(); // Spawn nebula clouds
         frameGalaxy(); // Frame immediately; do not wait for the catalog request.
 
         const res = await fetch('/api/stars');
         starData = await res.json();
+
+        // Prebuild index to prevent first-keystroke stutter
+        if (typeof buildSearchIndex === 'function') {
+            buildSearchIndex(starData);
+        }
+
+        // Bind only after the catalog exists. The getter keeps both controls on
+        // the current catalog if a later load replaces the starData array.
+        initAutocomplete(
+            document.getElementById('start'),
+            document.getElementById('start-listbox'),
+            () => starData
+        );
+        initAutocomplete(
+            document.getElementById('end'),
+            document.getElementById('end-listbox'),
+            () => starData
+        );
+        document.body.dataset.catalogReady = 'true';
 
         // Procedurally generate galaxy-wide stars using the same spiral arm distribution as initGalaxy
         const arms = 4;
@@ -749,6 +1174,8 @@ async function loadStars() {
         const positions = new Float32Array(starData.length * 3);
         const colors = new Float32Array(starData.length * 3);
         const sizes = new Float32Array(starData.length);
+        const isProceduralArr = new Float32Array(starData.length);
+        const isSelectedArr = new Float32Array(starData.length);
 
         for (let i = 0; i < starData.length; i++) {
             const s = starData[i];
@@ -757,10 +1184,6 @@ async function loadStars() {
             positions[i * 3 + 2] = s.z;
 
             let col = getSpectralColor(s.s);
-            if (s.n === "Sol") {
-                col = new THREE.Color(0xffff00); // Highlight sol
-            }
-
             colors[i * 3] = col.r;
             colors[i * 3 + 1] = col.g;
             colors[i * 3 + 2] = col.b;
@@ -772,17 +1195,23 @@ async function loadStars() {
 
             // Inverse mapping so smaller mag gives larger size
             let size = Math.max(1.0, 10.0 - mag);
-            if (s.n === "Sol") size = 15.0; // Make Sol prominent
             sizes[i] = size;
+            isProceduralArr[i] = (s.n && s.n.startsWith("GAL-")) ? 1.0 : 0.0;
+            isSelectedArr[i] = 0.0;
         }
 
         starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         starsGeometry.setAttribute('customColor', new THREE.BufferAttribute(colors, 3));
         starsGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+        starsGeometry.setAttribute('isProcedural', new THREE.BufferAttribute(isProceduralArr, 1));
+        starsGeometry.setAttribute('isSelected', new THREE.BufferAttribute(isSelectedArr, 1));
 
         const shaderMaterial = new THREE.ShaderMaterial({
             uniforms: {
-                color: { value: new THREE.Color(0xffffff) }
+                color: { value: new THREE.Color(0xffffff) },
+                uSelectedPointOpacity: { value: 1.0 },
+                uGalacticCenter: { value: galacticCenter },
+                uTransitionOpacity: { value: 1.0 }
             },
             vertexShader: vertexShader,
             fragmentShader: fragmentShader,
@@ -836,6 +1265,12 @@ function finiteCoordinate(value) {
 function resolveHopStar(hop) {
     if (!hop || (typeof hop !== 'object' && typeof hop !== 'string')) return null;
 
+    const name = hopName(hop);
+    if (name) {
+        const exact = starData.find(star => typeof star.n === 'string' && star.n.toLocaleLowerCase() === name.toLocaleLowerCase());
+        if (exact) return exact;
+    }
+
     let hopX = null, hopY = null, hopZ = null;
     if (typeof hop === 'object') {
         hopX = finiteCoordinate(hop.x ?? hop.position?.[0]);
@@ -858,11 +1293,7 @@ function resolveHopStar(hop) {
         if (byPos) return byPos;
     }
 
-    const name = hopName(hop);
     if (name) {
-        const exact = starData.find(star => typeof star.n === 'string' && star.n.toLocaleLowerCase() === name.toLocaleLowerCase());
-        if (exact) return exact;
-
         const nameLower = name.toLocaleLowerCase();
         const compatible = starData.find(star => {
             if (typeof star.n !== 'string') return false;
@@ -900,10 +1331,22 @@ function updateHopNavigation() {
 
 function focusHop(index) {
     if (!Number.isInteger(index) || index < 0 || index >= currentRouteHops.length) return;
+    const star = resolvedRouteStars[index];
+    if (!star) return; // Atomically fail if unresolved
+
     currentHopIndex = index;
     updateHopNavigation();
-    const star = resolvedRouteStars[index];
-    if (!star) return;
+
+    if (pathNodes && pathNodes.geometry) {
+        const hideAttr = pathNodes.geometry.getAttribute('hideMarker');
+        const markerIndex = hopToMarkerIndex[index];
+        if (hideAttr && markerIndex >= 0 && updateRouteMarkerVisibility(hideAttr.array, markerIndex)) {
+            hideAttr.needsUpdate = true;
+        }
+    }
+
+    const starIdx = starData.indexOf(star);
+    if (starIdx >= 0) highlightStar(starIdx);
     flyToStar(star.x, star.y, star.z);
     showStarDetails(star, { routeIndex: index });
 }
@@ -914,18 +1357,24 @@ function drawPath(hops) {
         scene.remove(pathLine);
         pathLine.geometry.dispose();
         pathLine.material.dispose();
+        pathLine = null;
     }
     if (pathNodes) {
         scene.remove(pathNodes);
         pathNodes.geometry.dispose();
         pathNodes.material.dispose();
+        pathNodes = null;
     }
 
     const points = [];
-    for (let hop of hops) {
-        const star = resolveHopStar(hop);
+    hopToMarkerIndex = [];
+    for (let i = 0; i < hops.length; i++) {
+        const star = resolveHopStar(hops[i]);
         if (star) {
+            hopToMarkerIndex[i] = points.length;
             points.push(new THREE.Vector3(star.x, star.y, star.z));
+        } else {
+            hopToMarkerIndex[i] = -1;
         }
     }
 
@@ -949,10 +1398,17 @@ function drawPath(hops) {
 
     // Add HUD nodes so the trajectory remains visible from galactic scale
     const nodesGeo = new THREE.BufferGeometry().setFromPoints(points);
+    const hiddenMarkers = new Float32Array(points.length);
+    const initialMarkerIndex = currentHopIndex >= 0 && currentHopIndex < hopToMarkerIndex.length ? hopToMarkerIndex[currentHopIndex] : -1;
+    if (initialMarkerIndex >= 0) updateRouteMarkerVisibility(hiddenMarkers, initialMarkerIndex);
+    nodesGeo.setAttribute('hideMarker', new THREE.BufferAttribute(hiddenMarkers, 1));
     const nodesMat = new THREE.ShaderMaterial({
         uniforms: { color: { value: new THREE.Color(0x00ffff) } },
         vertexShader: `
+            attribute float hideMarker;
+            varying float vHideMarker;
             void main() {
+                vHideMarker = hideMarker;
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
                 // Clamping min size to 8.0px ensures the route is ALWAYS visible from the edge of the galaxy!
@@ -962,7 +1418,9 @@ function drawPath(hops) {
         `,
         fragmentShader: `
             uniform vec3 color;
+            varying float vHideMarker;
             void main() {
+                if (vHideMarker > 0.5) discard;
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
@@ -977,10 +1435,68 @@ function drawPath(hops) {
     pathNodes = new THREE.Points(nodesGeo, nodesMat);
     scene.add(pathNodes);
 
-    if (points.length > 0) {
-        const p = points[0];
-        camera.position.set(p.x + 50, p.y + 50, p.z + 50);
-        controls.target.copy(p);
+}
+
+function applyRouteResult(hops) {
+    const list = document.getElementById('hop-list');
+    list.replaceChildren();
+    currentRouteHops = hops.slice();
+    resolvedRouteStars = currentRouteHops.map(resolveHopStar);
+
+    let firstResolved = -1;
+    for (let i = 0; i < resolvedRouteStars.length; i++) {
+        if (resolvedRouteStars[i]) {
+            firstResolved = i;
+            break;
+        }
+    }
+
+    currentHopIndex = -1;
+    drawPath(currentRouteHops);
+
+    currentRouteHops.forEach((hop, i) => {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        const name = hopName(hop) || `WAYPOINT ${i + 1}`;
+        const distance = typeof hop === 'object' && hop ? finiteCoordinate(hop.dist_pc) : null;
+        const nameSpan = document.createElement('span');
+        const distanceSpan = document.createElement('span');
+        button.type = 'button';
+        button.className = 'hop-button';
+        button.setAttribute('aria-label', `Focus route hop ${i + 1}: ${name}`);
+        nameSpan.className = 'hop-name';
+        nameSpan.textContent = `[${String(i + 1).padStart(2, '0')}] ${name}`;
+        distanceSpan.className = 'hop-distance';
+        distanceSpan.textContent = distance !== null && distance > 0 ? `+${distance.toFixed(2)} PC` : 'ORIGIN';
+        button.append(nameSpan, distanceSpan);
+        button.addEventListener('click', () => focusHop(i));
+        li.appendChild(button);
+        list.appendChild(li);
+    });
+
+    const sucDiv = document.getElementById('success-message');
+    sucDiv.classList.remove('hidden');
+
+    if (firstResolved !== -1) {
+        focusHop(firstResolved);
+    } else {
+        updateHopNavigation();
+        const detailsCard = document.getElementById('star-details');
+        if (detailsCard) {
+            detailsCard.hidden = true;
+            detailsCard.replaceChildren();
+        }
+        if (currentSelectedStarIndex >= 0) {
+            const isSelectedAttr = starsGeometry.getAttribute('isSelected');
+            if (isSelectedAttr) {
+                isSelectedAttr.setX(currentSelectedStarIndex, 0.0);
+                isSelectedAttr.needsUpdate = true;
+            }
+            currentSelectedStarIndex = -1;
+        }
+        if (focusRing) focusRing.visible = false;
+
+        finishFlightTransition(false);
     }
 }
 
@@ -1020,37 +1536,7 @@ document.getElementById('nav-form').addEventListener('submit', async (e) => {
         document.getElementById('res-obs').innerText = data.total_obs_time.toFixed(2);
         document.getElementById('res-ship').innerText = data.total_ship_time.toFixed(2);
 
-        const list = document.getElementById('hop-list');
-        list.replaceChildren();
-        currentRouteHops = hops.slice();
-        resolvedRouteStars = currentRouteHops.map(resolveHopStar);
-        currentHopIndex = currentRouteHops.length ? 0 : -1;
-
-        currentRouteHops.forEach((hop, i) => {
-            const li = document.createElement('li');
-            const button = document.createElement('button');
-            const name = hopName(hop) || `WAYPOINT ${i + 1}`;
-            const distance = typeof hop === 'object' && hop ? finiteCoordinate(hop.dist_pc) : null;
-            const nameSpan = document.createElement('span');
-            const distanceSpan = document.createElement('span');
-            button.type = 'button';
-            button.className = 'hop-button';
-            button.setAttribute('aria-label', `Focus route hop ${i + 1}: ${name}`);
-            nameSpan.className = 'hop-name';
-            nameSpan.textContent = `[${String(i + 1).padStart(2, '0')}] ${name}`;
-            distanceSpan.className = 'hop-distance';
-            distanceSpan.textContent = distance !== null && distance > 0 ? `+${distance.toFixed(2)} PC` : 'ORIGIN';
-            button.append(nameSpan, distanceSpan);
-            button.addEventListener('click', () => focusHop(i));
-            li.appendChild(button);
-            list.appendChild(li);
-        });
-
-        sucDiv.classList.remove('hidden');
-        drawPath(currentRouteHops);
-        updateHopNavigation();
-        if (currentRouteHops.length > 0) focusHop(0);
-
+        applyRouteResult(hops);
     } catch (e) {
         errDiv.innerText = "ERROR: " + (e.message || "ROUTE CALCULATION FAILED");
         errDiv.classList.remove('hidden');
@@ -1139,13 +1625,63 @@ function restoreGalaxyZoomLimit() {
     controls.maxDistance = Number.isFinite(galaxyFrameDistance) ? galaxyFrameDistance : 28000;
 }
 
+let fadingMaterials = null;
+let flightMayCommitDestination = false;
+function finishFlightTransition(commitDestination) {
+    if (commitDestination) {
+        controls.target.copy(targetNode);
+        camera.position.copy(camTargetNode);
+    }
+    flightTransitionState.progress = 1.0;
+    flightTransitionState.phase = 'IDLE';
+    flightTransitionState.opacity = 1.0;
+    flightTransitionState.mapArcT = 1.0;
+    flightTransitionState.arrivalT = 1.0;
+    flightTransitionState.isActive = false;
+    flightTransitionState.isFlying = false;
+    isFlying = false;
+    controls.enabled = true;
+    restoreGalaxyZoomLimit();
+    if (fadingMaterials) {
+        for (let i = 0; i < fadingMaterials.length; i++) {
+            const item = fadingMaterials[i];
+            applyMaterialOpacity(item.material, item.baseline);
+        }
+        fadingMaterials = null;
+    }
+    flightMayCommitDestination = false;
+}
+
 function flyToStar(x, y, z) {
+    flightMayCommitDestination = true;
     targetNode.set(x, y, z);
-    camTargetNode.set(x + 20, y + 20, z + 40);
+    camTargetNode.set(x, y - 6.32, z + 18.97); // Nice local approach pose
+
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    flightSourceNode.copy(controls.target);
+    flightSourceCam.copy(camera.position);
+
+    const frame = getGalaxyFrame();
+    const sourceMap = getMapPose(flightSourceNode.x, flightSourceNode.y, flightSourceNode.z, frame);
+    flightSourceMapTarget.copy(sourceMap.target);
+    flightSourceMapCam.copy(sourceMap.cam);
+
+    const destMap = getMapPose(targetNode.x, targetNode.y, targetNode.z, frame);
+    flightTargetMapTarget.copy(destMap.target);
+    flightTargetMapCam.copy(destMap.cam);
+
+    fadingMaterials = [];
+    if (starsGeometry && starsPoints && starsPoints.material) {
+        fadingMaterials.push({ material: starsPoints.material, baseline: 1.0 });
+    }
+    if (scene.userData.nebulaMesh) fadingMaterials.push({ material: scene.userData.nebulaMesh.material, baseline: 1.0 });
+
+    flightTransitionState = startTransition(flightTransitionState, { reducedMotion: prefersReducedMotion });
+
     isFlying = true;
-    // OrbitControls clamps camera distance in update(). Temporarily suspend the
-    // user zoom-out boundary so it cannot interfere with this camera flight.
     controls.maxDistance = Infinity;
+    controls.enabled = false;
 
     if (focusRing) {
         focusRing.position.set(x, y, z);
@@ -1154,20 +1690,21 @@ function flyToStar(x, y, z) {
 }
 
 // Persistent star details and intentional canvas picking
-const raycaster = new THREE.Raycaster();
-raycaster.params.Points.threshold = 1.5;
-
 const detailsCard = document.createElement('aside');
 detailsCard.id = 'star-details';
 detailsCard.hidden = true;
 detailsCard.setAttribute('aria-label', 'Focused star details');
 document.body.appendChild(detailsCard);
 
-function appendDetail(list, label, value) {
+function appendDetail(list, label, value, isHTML = false) {
     const term = document.createElement('dt');
     const detail = document.createElement('dd');
     term.textContent = label;
-    detail.textContent = value;
+    if (isHTML) {
+        detail.innerHTML = value;
+    } else {
+        detail.textContent = value;
+    }
     list.append(term, detail);
 }
 
@@ -1204,6 +1741,12 @@ function showStarDetails(star, options = {}) {
         : 'UNKNOWN');
     appendDetail(list, 'DISTANCE FROM SOL', distanceFromSol === null ? 'UNKNOWN' : `${distanceFromSol.toFixed(2)} PC`);
     appendDetail(list, 'ROUTE ROLE', routeIndex < 0 ? 'OFF ROUTE' : `${routeIndex === 0 ? 'ORIGIN' : routeIndex === currentRouteHops.length - 1 ? 'DESTINATION' : 'WAYPOINT'} · ${routeIndex + 1}/${currentRouteHops.length}`);
+    const isSol = star.n === 'Sol';
+    const isProcedural = !!(star.n && star.n.startsWith('GAL-'));
+    const provenance = getProvenance(isSol, isProcedural);
+    if (provenance) {
+        appendDetail(list, 'PROVENANCE', provenance, true);
+    }
     wikiLink.textContent = 'SEARCH WIKIPEDIA ↗';
     wikiLink.href = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(name)}`;
     wikiLink.target = '_blank';
@@ -1212,74 +1755,128 @@ function showStarDetails(star, options = {}) {
     detailsCard.hidden = false;
 }
 
-function pickStar(clientX, clientY) {
-    if (!starsPoints) return;
+function pickStar(clientX, clientY, pointerType) {
+    if (!starsPoints || !starData) return;
     const bounds = renderer.domElement.getBoundingClientRect();
-    const mouse = new THREE.Vector2();
-    mouse.x = ((clientX - bounds.left) / bounds.width) * 2 - 1;
-    mouse.y = -((clientY - bounds.top) / bounds.height) * 2 + 1;
-    raycaster.setFromCamera(mouse, camera);
 
-    const intersects = raycaster.intersectObject(starsPoints);
-    if (intersects.length > 0) {
-        const idx = intersects[0].index;
-        const star = starData[idx];
+    camera.updateMatrixWorld();
+    const viewProj = new THREE.Matrix4();
+    viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+
+    const positions = starsPoints.geometry.attributes.position.array;
+    const bestIndex = StarPicking.pickStarScreenSpace(
+        positions, starData, viewProj.elements, bounds, clientX, clientY, pointerType
+    );
+
+    if (bestIndex >= 0) {
+        const star = starData[bestIndex];
+        highlightStar(bestIndex);
         showStarDetails(star);
         flyToStar(star.x, star.y, star.z);
     }
 }
 
-const activeCanvasPointers = new Map();
-const PICK_MOVEMENT_THRESHOLD = 7;
-let canvasGestureWasMultiTouch = false;
+const canvasPointerState = new PointerState();
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
-    if (isFlying) {
-        isFlying = false;
-        restoreGalaxyZoomLimit();
+    if (flightTransitionState.isActive) {
+        flightMayCommitDestination = false;
+        interruptTransition(flightTransitionState);
     }
-    activeCanvasPointers.set(event.pointerId, {
-        startX: event.clientX,
-        startY: event.clientY,
-        moved: false,
-        canceled: false,
-        isTouch: event.pointerType === 'touch'
-    });
-    if (activeCanvasPointers.size > 1) {
-        canvasGestureWasMultiTouch = true;
-        activeCanvasPointers.forEach(pointer => { pointer.canceled = true; });
-    }
+    canvasPointerState.onPointerDown(event.pointerId, event.clientX, event.clientY, event.timeStamp);
     try { renderer.domElement.setPointerCapture(event.pointerId); } catch (_) { /* Capture is best-effort. */ }
 });
 
 renderer.domElement.addEventListener('pointermove', (event) => {
-    const pointer = activeCanvasPointers.get(event.pointerId);
-    if (!pointer) return;
-    const threshold = pointer.isTouch ? 15 : PICK_MOVEMENT_THRESHOLD;
-    if (Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) >= threshold) {
-        pointer.moved = true;
-        pointer.canceled = true;
+    canvasPointerState.onPointerMove(event.pointerId, event.clientX, event.clientY);
+});
+
+renderer.domElement.addEventListener('pointerup', (event) => {
+    canvasPointerState.onPointerUp(event.pointerId, event.clientX, event.clientY, event.timeStamp, event.pointerType, pickStar);
+});
+
+renderer.domElement.addEventListener('pointercancel', (event) => {
+    canvasPointerState.onPointerCancel(event.pointerId);
+});
+
+renderer.domElement.addEventListener('lostpointercapture', (event) => {
+    canvasPointerState.onPointerCancel(event.pointerId);
+});
+
+let _canvasBoundsCache = { left: 0, top: 0, width: 800, height: 600 };
+function updateCanvasBoundsCache() {
+    if (renderer && renderer.domElement) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        _canvasBoundsCache.left = rect.left;
+        _canvasBoundsCache.top = rect.top;
+        _canvasBoundsCache.width = rect.width;
+        _canvasBoundsCache.height = rect.height;
     }
-});
-
-function finishCanvasPointer(event, canceled = false) {
-    const pointer = activeCanvasPointers.get(event.pointerId);
-    if (!pointer) return;
-    const remainingBeforeDelete = activeCanvasPointers.size;
-    const threshold = pointer.isTouch ? 15 : PICK_MOVEMENT_THRESHOLD;
-    const movedAtRelease = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) >= threshold;
-    const intentionalTap = !canceled && !pointer.canceled && !pointer.moved && !movedAtRelease
-        && !canvasGestureWasMultiTouch && remainingBeforeDelete === 1;
-    activeCanvasPointers.delete(event.pointerId);
-    if (activeCanvasPointers.size === 0) canvasGestureWasMultiTouch = false;
-    if (intentionalTap) pickStar(event.clientX, event.clientY);
 }
+// Init cache immediately once DOM is ready (or here is fine since canvas is appended at the top)
+updateCanvasBoundsCache();
 
-renderer.domElement.addEventListener('pointerup', event => finishCanvasPointer(event));
-renderer.domElement.addEventListener('pointercancel', event => finishCanvasPointer(event, true));
-renderer.domElement.addEventListener('lostpointercapture', event => {
-    if (activeCanvasPointers.has(event.pointerId)) finishCanvasPointer(event, true);
-});
+const _wheelRaycaster = new THREE.Raycaster();
+const _wheelPointer = new THREE.Vector2();
+const _wheelCursorRayDir = [0, 0, 0];
+const _wheelCameraPos = [0, 0, 0];
+const _wheelTargetPos = [0, 0, 0];
+const _wheelOutput = { newCameraPos: [0, 0, 0], newTarget: [0, 0, 0] };
+const _wheelZoomConfig = {
+    cameraPos: _wheelCameraPos,
+    targetPos: _wheelTargetPos,
+    cursorRayDir: _wheelCursorRayDir,
+    deltaY: 0,
+    deltaMode: 0,
+    viewportHeight: 0,
+    zoomSpeed: 0,
+    minDistance: 0,
+    maxDistance: 0,
+    out: _wheelOutput
+};
+
+renderer.domElement.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    if (flightTransitionState && flightTransitionState.isActive) {
+        flightMayCommitDestination = false;
+        interruptTransition(flightTransitionState);
+    }
+
+    const applyDelta = accumulateWheelDelta(event.deltaY, event.deltaMode, renderer.domElement.clientHeight);
+    if (applyDelta === 0) return;
+
+    _wheelPointer.x = ((event.clientX - _canvasBoundsCache.left) / _canvasBoundsCache.width) * 2 - 1;
+    _wheelPointer.y = -((event.clientY - _canvasBoundsCache.top) / _canvasBoundsCache.height) * 2 + 1;
+
+    _wheelRaycaster.setFromCamera(_wheelPointer, camera);
+    _wheelCursorRayDir[0] = _wheelRaycaster.ray.direction.x;
+    _wheelCursorRayDir[1] = _wheelRaycaster.ray.direction.y;
+    _wheelCursorRayDir[2] = _wheelRaycaster.ray.direction.z;
+
+    _wheelCameraPos[0] = camera.position.x;
+    _wheelCameraPos[1] = camera.position.y;
+    _wheelCameraPos[2] = camera.position.z;
+
+    _wheelTargetPos[0] = controls.target.x;
+    _wheelTargetPos[1] = controls.target.y;
+    _wheelTargetPos[2] = controls.target.z;
+
+    _wheelZoomConfig.deltaY = applyDelta;
+    _wheelZoomConfig.viewportHeight = renderer.domElement.clientHeight;
+    _wheelZoomConfig.zoomSpeed = controls.zoomSpeed;
+    _wheelZoomConfig.minDistance = controls.minDistance;
+    _wheelZoomConfig.maxDistance = controls.maxDistance;
+
+    const result = calculateZoom(_wheelZoomConfig);
+
+    if (result) {
+        camera.position.set(result.newCameraPos[0], result.newCameraPos[1], result.newCameraPos[2]);
+        controls.target.set(result.newTarget[0], result.newTarget[1], result.newTarget[2]);
+        controls.update();
+    }
+}, { passive: false, capture: true });
 
 document.getElementById('btn-prev-hop').addEventListener('click', () => focusHop(currentHopIndex - 1));
 document.getElementById('btn-next-hop').addEventListener('click', () => focusHop(currentHopIndex + 1));
@@ -1298,35 +1895,128 @@ window.addEventListener('keydown', (event) => {
 });
 
 // Animation Loop
+let previousFrameTime = performance.now();
+
+function updateFlight(deltaMs) {
+    if (!flightTransitionState.isActive) return;
+
+    updateTransition(flightTransitionState, deltaMs);
+
+    if (fadingMaterials) {
+        for (let i = 0; i < fadingMaterials.length; i++) {
+            const item = fadingMaterials[i];
+            applyMaterialOpacity(item.material, item.baseline * flightTransitionState.opacity);
+        }
+    }
+
+    if (flightTransitionState.isFlying) {
+        if (flightTransitionState.phase === 'DEPARTURE') {
+            controls.target.copy(flightSourceNode);
+            camera.position.copy(flightSourceCam);
+        } else if (flightTransitionState.phase === 'MAP_ARC') {
+            controls.target.lerpVectors(flightSourceMapTarget, flightTargetMapTarget, flightTransitionState.mapArcT);
+            _scratchVecA.lerpVectors(flightSourceMapCam, flightTargetMapCam, flightTransitionState.mapArcT);
+            const arcHeight = flightSourceMapTarget.distanceTo(flightTargetMapTarget) * 0.3;
+            const frame = getGalaxyFrame();
+            _scratchVecB.copy(frame.viewOut).multiplyScalar(arcHeight * Math.sin(flightTransitionState.mapArcT * Math.PI));
+            camera.position.copy(_scratchVecA).add(_scratchVecB);
+        } else if (flightTransitionState.phase === 'ARRIVAL') {
+            _scratchVecA.copy(camTargetNode).sub(targetNode).normalize();
+            _scratchVecB.copy(camTargetNode).addScaledVector(_scratchVecA, 200);
+            camera.position.lerpVectors(_scratchVecB, camTargetNode, flightTransitionState.arrivalT);
+            controls.target.copy(targetNode);
+        }
+    }
+
+    if (!flightTransitionState.isActive) {
+        // updateTransition marks the terminal sample inactive before the phase
+        // interpolation above runs, so commit and clean up the exact pose here.
+        const commitDestination = flightMayCommitDestination;
+        finishFlightTransition(commitDestination);
+        flightMayCommitDestination = false;
+    }
+}
+
 function animate() {
+    const now = performance.now();
+    const deltaMs = Math.min(100, Math.max(0, now - previousFrameTime));
+    previousFrameTime = now;
     requestAnimationFrame(animate);
 
     if (scene.userData.blackHoleMat) {
         scene.userData.blackHoleMat.uniforms.time.value += 0.01;
     }
-    if (scene.userData.galaxyMesh) {
-        scene.userData.galaxyMesh.rotation.z -= 0.0002;
-    }
-    if (scene.userData.nebulaMesh) {
-        scene.userData.nebulaMesh.rotation.z -= 0.00015;
-    }
 
 
-    if (isFlying) {
-        controls.target.lerp(targetNode, 0.05);
-        camera.position.lerp(camTargetNode, 0.05);
-        if (controls.target.distanceTo(targetNode) < 1.0) {
-            isFlying = false;
-            restoreGalaxyZoomLimit();
+    updateFlight(deltaMs);
+
+    if (interiorSky) {
+        interiorSky.position.copy(camera.position);
+        const galDist = camera.position.distanceTo(galacticCenter);
+        const skyRes = calculateSkyOpacity(galDist, flightTransitionState.opacity, flightTransitionState.isActive, OPACITY_FLOOR, _skyResOutput);
+        interiorSky.material.opacity = skyRes.opacity;
+        if (interiorSky.material.userData.shader) {
+            interiorSky.material.userData.shader.uniforms.uLodBias.value = skyRes.lodBias;
         }
+    }
+
+    if (overviewSky) {
+        overviewSky.position.copy(camera.position);
+        const galDist = camera.position.distanceTo(galacticCenter);
+        overviewSkyMaterial.uniforms.uOpacity.value = calculateOverviewOpacity(galDist, flightTransitionState.opacity, flightTransitionState.isActive, OPACITY_FLOOR);
+    }
+
+    if (currentSelectedStarIndex >= 0) {
+        const star = starData[currentSelectedStarIndex];
+        const dist = camera.position.distanceTo(targetNode);
+        const lod = calculateDetailLOD(dist, camera.fov, window.innerHeight);
+        if (starsPoints) {
+            starsPoints.material.uniforms.uSelectedPointOpacity.value = lod.pointOpacity;
+        }
+
+        if (lod.visible) {
+            detailGroup.visible = true;
+            detailGroup.position.copy(targetNode);
+            detailGroup.scale.set(lod.detailScale, lod.detailScale, lod.detailScale);
+
+            if (star.n === 'Sol') {
+                solMesh.visible = true;
+                starMesh.visible = false;
+                solMesh.material.uniforms.uTransitionOpacity.value = lod.detailOpacity * flightTransitionState.opacity;
+            } else {
+                solMesh.visible = false;
+                starMesh.visible = true;
+                const params = getPhotosphereParams(star.s);
+                _starBaseColor.set(params.baseColor);
+                starMesh.material.uniforms.uColor.value.copy(_starBaseColor);
+                starMesh.material.uniforms.uLimbDarkening.value = params.limbDarkening;
+                starMesh.material.uniforms.uGranulationContrast.value = params.granulationContrast;
+                starMesh.material.uniforms.uGranulationScale.value = params.granulationScale;
+                starMesh.material.uniforms.uTime.value = now * 0.001;
+                starMesh.material.uniforms.uTransitionOpacity.value = lod.detailOpacity * flightTransitionState.opacity;
+            }
+        } else {
+            detailGroup.visible = false;
+        }
+    } else {
+        detailGroup.visible = false;
     }
 
     // Scale focus ring dynamically so it acts as a permanent HUD locator beacon when zoomed out
     if (focusRing && focusRing.visible) {
         focusRing.lookAt(camera.position);
         let dist = camera.position.distanceTo(focusRing.position);
-        let scale = Math.max(1.0, dist / 80.0);
+        let scale = calculateReticleScale(dist, camera.fov, window.innerHeight, 36, 4.0);
         focusRing.scale.set(scale, scale, scale);
+
+        let op = calculateReticleOpacity(dist);
+        applyMaterialOpacity(focusRing.material, 0.38 * flightTransitionState.opacity * op);
+    }
+
+    if (pathLine) {
+        let pathDist = camera.position.distanceTo(controls.target);
+        let pathOp = calculateRouteOpacity(pathDist);
+        applyMaterialOpacity(pathLine.material, 0.8 * flightTransitionState.opacity * pathOp);
     }
 
     controls.update();
@@ -1351,6 +2041,10 @@ window.addEventListener('resize', () => {
     }
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    updateCanvasBoundsCache();
+    if (overviewSkyMaterial) {
+        overviewSkyMaterial.uniforms.uDpr.value = Math.min(window.devicePixelRatio, 2);
+    }
 });
 
 // Init
