@@ -1,7 +1,89 @@
 const fs = require('fs');
 const assert = require('assert');
 
-const src = fs.readFileSync(__dirname + '/public/app.js', 'utf8').replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '');
+function stripComments(source) {
+    let result = '';
+    let state = 'code';
+
+    for (let i = 0; i < source.length; i++) {
+        const char = source[i];
+        const next = source[i + 1];
+
+        if (state === 'lineComment') {
+            if (char === '\n' || char === '\r') {
+                result += char;
+                state = 'code';
+            }
+            continue;
+        }
+
+        if (state === 'blockComment') {
+            if (char === '*' && next === '/') {
+                result += ' ';
+                i++;
+                state = 'code';
+            } else if (char === '\n' || char === '\r') {
+                result += char;
+            }
+            continue;
+        }
+
+        if (state === 'singleQuote' || state === 'doubleQuote') {
+            result += char;
+            if (char === '\\') {
+                result += source[++i] || '';
+            } else if ((state === 'singleQuote' && char === "'") ||
+                       (state === 'doubleQuote' && char === '"')) {
+                state = 'code';
+            }
+            continue;
+        }
+
+        if (char === "'") {
+            result += char;
+            state = 'singleQuote';
+        } else if (char === '"') {
+            result += char;
+            state = 'doubleQuote';
+        } else if (char === '/' && next === '/') {
+            result += ' ';
+            i++;
+            state = 'lineComment';
+        } else if (char === '/' && next === '*') {
+            result += ' ';
+            i++;
+            state = 'blockComment';
+        } else {
+            // Template contents include executable GLSL, so comments inside them
+            // must also be removed. Quoted JS URL strings remain untouched above.
+            result += char;
+        }
+    }
+
+    return result;
+}
+
+const appSource = fs.readFileSync(__dirname + '/public/app.js', 'utf8');
+const src = stripComments(appSource);
+
+function assertOverviewSource(source) {
+    const executableSource = stripComments(source);
+    const overviewSkyMatStart = executableSource.search(/function\s+initOverviewSky\s*\(\s*\)\s*\{/);
+    assert.ok(overviewSkyMatStart > -1, 'Should find executable initOverviewSky block');
+
+    const overviewSkyMatEnd = executableSource.indexOf('overviewSky = new THREE.Points(geo, overviewSkyMaterial);', overviewSkyMatStart);
+    assert.ok(overviewSkyMatEnd > overviewSkyMatStart, 'Should find executable overviewSky construction');
+    const overviewSkyBlock = executableSource.substring(overviewSkyMatStart, overviewSkyMatEnd);
+
+    assert.match(executableSource, /overviewSky\.renderOrder\s*=\s*-1\s*;/, 'overviewSky should have executable renderOrder -1 assignment');
+    assert.match(overviewSkyBlock, /gl\.getParameter\s*\(\s*gl\.ALIASED_POINT_SIZE_RANGE\s*\)/, 'initOverviewSky should query ALIASED_POINT_SIZE_RANGE once during setup');
+    assert.match(overviewSkyBlock, /uMaxPointSize\s*:\s*\{\s*value\s*:\s*overviewMaxPointSize\s*\}/, 'uMaxPointSize uniform should be wired to overviewMaxPointSize');
+    assert.match(overviewSkyBlock, /(?:float\s+\w+\s*=\s*min\s*\([^;]*uMaxPointSize[^;]*\)[\s\S]*gl_PointSize\s*=\s*\w+|gl_PointSize\s*=\s*min\s*\([^;]*uMaxPointSize[^;]*\))\s*;/, 'gl_PointSize should use a value clamped to uMaxPointSize');
+    assert.match(overviewSkyBlock, /clamp\s*\(\s*1\.0\s*\/\s*\(\s*vClampRatio\s*\*\s*vClampRatio\s*\)/, 'low-limit fallback/compensation must be finite and bounded');
+    assert.match(overviewSkyBlock, /if\s*\(\s*vClampRatio\s*<\s*1\.0\s*\)/, 'companion compensation branch must remain executable');
+    assert.match(overviewSkyBlock, /1\.0\s*-\s*smoothstep\s*\(\s*0\.2\s*,\s*0\.5\s*,\s*r\s*\)/, 'initOverviewSky companion shader should require ordered smoothstep equivalent');
+    assert.doesNotMatch(overviewSkyBlock, /smoothstep\s*\(\s*0\.5\s*,\s*0\.2\s*,\s*r\s*\)/, 'initOverviewSky companion shader should forbid reversed smoothstep edges');
+}
 
 function smoothstep(edge0, edge1, x) {
     const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
@@ -69,6 +151,7 @@ try {
         assert.ok(matBlock.match(/smoothstep\(\s*12000\.0\s*,\s*25000\.0\s*,\s*vGalacticDist\s*\)/), `${mat} should use defined smoothstep on vGalacticDist`);
     }
 
+    assertOverviewSource(appSource);
 
     console.log('GREEN: Shader regression tests passed.');
 } catch (e) {
@@ -118,13 +201,58 @@ try {
 }
 
 try {
-    // 1. ordered object renderOrder: interior first, galaxy/default afterward;
+    // Ordered object renderOrder: interior first, overview second, galaxy/default afterward.
     assert.ok(src.match(/interiorSky\.renderOrder\s*=\s*-2/), 'interiorSky should have renderOrder -2');
+    assert.ok(src.match(/overviewSky\.renderOrder\s*=\s*-1/), 'overviewSky should have renderOrder -1');
     assert.ok(!src.match(/galaxyMesh\.renderOrder\s*=\s*-[1-9]/), 'galaxyMesh should not have negative renderOrder (default 0 or >0)');
 
-    console.log('GREEN: Interior rendering regression tests passed.');
+    assertOverviewSource(appSource);
+
+    const overviewFixture = `
+        function initOverviewSky() {
+            gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
+            uMaxPointSize: { value: overviewMaxPointSize };
+            float clampedSize = min(reqSize, uMaxPointSize);
+            gl_PointSize = clampedSize;
+            intensity *= 1.0 - smoothstep(0.2, 0.5, r);
+            if (vClampRatio < 1.0) {
+                clamp(1.0 / (vClampRatio * vClampRatio), 1.0, 10.0);
+            }
+            overviewSky = new THREE.Points(geo, overviewSkyMaterial);
+        }
+        overviewSky.renderOrder = -1;
+        const docs = "https://example.test//overview/*reference*/";
+    `;
+    assert.doesNotThrow(() => assertOverviewSource(overviewFixture), 'Mutation fixture should satisfy every overview assertion before mutation');
+
+    const overviewMutations = [
+        ['initialization', 'function initOverviewSky() {'],
+        ['render order', 'overviewSky.renderOrder = -1;'],
+        ['hardware-cap query', 'gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);'],
+        ['uniform wiring', 'uMaxPointSize: { value: overviewMaxPointSize };'],
+        ['point-size clamp', 'float clampedSize = min(reqSize, uMaxPointSize);'],
+        ['point-size assignment', 'gl_PointSize = clampedSize;'],
+        ['compensation', 'clamp(1.0 / (vClampRatio * vClampRatio), 1.0, 10.0);'],
+        ['companion branch', 'if (vClampRatio < 1.0) {'],
+        ['ordered companion falloff', 'intensity *= 1.0 - smoothstep(0.2, 0.5, r);'],
+        ['overview construction', 'overviewSky = new THREE.Points(geo, overviewSkyMaterial);']
+    ];
+    for (const [name, snippet] of overviewMutations) {
+        const mutatedSource = overviewFixture.replace(snippet, `/* ${snippet} */`);
+        assert.throws(
+            () => assertOverviewSource(mutatedSource),
+            undefined,
+            `Commenting out overview ${name} must fail executable-source assertions`
+        );
+    }
+    assert.ok(
+        stripComments(overviewFixture).includes('https://example.test//overview/*reference*/'),
+        'Comment stripping should preserve comment-like text inside quoted URLs'
+    );
+
+    console.log('GREEN: Overview rendering regression tests passed.');
 } catch (e) {
-    console.error('RED (Interior Blocker):', e.message);
+    console.error('RED (Overview Blocker):', e.message);
     process.exit(1);
 }
 

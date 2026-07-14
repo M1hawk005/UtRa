@@ -9,7 +9,7 @@ function calculateSkyOpacity(galDist, out) {
     // Background sky must gain spatial-frequency LOD.
     // At the outer blend edge (macroFade=1), only coarse low-frequency structure may appear.
     // Progressively reduce bias toward full resolution (lodBias=0) while moving inward (macroFade=0).
-    const lodBias = macroFade * 5.0; // max ~5 mip levels at map edge
+    const lodBias = macroFade * 5.0; // max ~5 mip levels at far overview
 
     if (out) {
         out.opacity = skyAlpha;
@@ -17,6 +17,12 @@ function calculateSkyOpacity(galDist, out) {
         return out;
     }
     return { opacity: skyAlpha, lodBias: lodBias };
+}
+
+function calculateOverviewOpacity(galDist) {
+    let x = (galDist - 12000) / (25000 - 12000);
+    x = Math.max(0, Math.min(1, x));
+    return x * x * (3 - 2 * x);
 }
 
 function calculateDetailLOD(dist, fovDegrees, viewportHeight) {
@@ -171,6 +177,7 @@ function applyMaterialOpacity(material, opacityValue) {
 if (typeof module !== 'undefined') {
     module.exports = {
         calculateSkyOpacity,
+        calculateOverviewOpacity,
         calculateDetailLOD,
         getSpectralColorHex,
         applyMaterialOpacity,

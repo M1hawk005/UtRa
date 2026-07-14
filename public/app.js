@@ -32,6 +32,7 @@ let resolvedRouteStars = [];
 let currentHopIndex = -1;
 let currentSelectedStarIndex = -1;
 let interiorSky;
+let overviewSky, overviewSkyMaterial;
 let detailGroup = new THREE.Group();
 let solMesh, starMesh;
 
@@ -929,10 +930,161 @@ function getSpectralColor(spectrum) {
 
 
 
+function initOverviewSky() {
+    let overviewMaxPointSize = 64.0;
+    const gl = renderer.getContext();
+    if (gl) {
+        const range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
+        if (range && range.length === 2 && isFinite(range[1])) {
+            overviewMaxPointSize = range[1];
+        }
+    }
+
+    const { sources, smudges, companions } = generateOverviewDescriptors();
+    const total = sources.length + smudges.length + companions.length;
+
+    const pos = new Float32Array(total * 3);
+    const col = new Float32Array(total * 3);
+    const size = new Float32Array(total);
+    const alpha = new Float32Array(total);
+    const rot = new Float32Array(total);
+    const aspect = new Float32Array(total);
+    const classType = new Float32Array(total);
+
+    let idx = 0;
+    const addDesc = (d) => {
+        pos[idx * 3] = d.x * 50000;
+        pos[idx * 3 + 1] = d.y * 50000;
+        pos[idx * 3 + 2] = d.z * 50000;
+        col[idx * 3] = d.r;
+        col[idx * 3 + 1] = d.g;
+        col[idx * 3 + 2] = d.b;
+        size[idx] = d.size;
+        alpha[idx] = d.alpha;
+        rot[idx] = d.rotation;
+        aspect[idx] = d.aspect;
+        classType[idx] = d.classType;
+        idx++;
+    };
+
+    sources.forEach(addDesc);
+    smudges.forEach(addDesc);
+    companions.forEach(addDesc);
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('customColor', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    geo.setAttribute('aAlpha', new THREE.BufferAttribute(alpha, 1));
+    geo.setAttribute('aRotation', new THREE.BufferAttribute(rot, 1));
+    geo.setAttribute('aAspect', new THREE.BufferAttribute(aspect, 1));
+    geo.setAttribute('aClassType', new THREE.BufferAttribute(classType, 1));
+
+    overviewSkyMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uOpacity: { value: 0.0 },
+            uDpr: { value: renderer.getPixelRatio() },
+            uMaxPointSize: { value: overviewMaxPointSize }
+        },
+        vertexShader: `
+            attribute float aSize;
+            attribute vec3 customColor;
+            attribute float aAlpha;
+            attribute float aRotation;
+            attribute float aAspect;
+            attribute float aClassType;
+
+            uniform float uOpacity;
+            uniform float uDpr;
+            uniform float uMaxPointSize;
+
+            varying vec3 vColor;
+            varying float vAlpha;
+            varying float vRotation;
+            varying float vAspect;
+            varying float vClassType;
+            varying float vClampRatio;
+
+            void main() {
+                vColor = customColor;
+                vAlpha = aAlpha * uOpacity;
+                vRotation = aRotation;
+                vAspect = aAspect;
+                vClassType = aClassType;
+
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                gl_Position = projectionMatrix * mvPosition;
+
+                float reqSize = aSize * uDpr;
+                float clampedSize = min(reqSize, uMaxPointSize);
+                vClampRatio = clamp(clampedSize / max(reqSize, 0.0001), 0.0, 1.0);
+
+                gl_PointSize = clampedSize;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vColor;
+            varying float vAlpha;
+            varying float vRotation;
+            varying float vAspect;
+            varying float vClassType;
+            varying float vClampRatio;
+
+            void main() {
+                if (vAlpha < 0.001) discard;
+
+                vec2 uv = gl_PointCoord.xy - vec2(0.5);
+
+                float c = cos(vRotation);
+                float s = sin(vRotation);
+                mat2 matR = mat2(c, -s, s, c);
+                uv = matR * uv;
+
+                uv.y /= vAspect;
+
+                float dist = length(uv);
+                if (dist > 0.5) discard;
+
+                float intensity = 0.0;
+                if (vClassType < 0.5) {
+                    intensity = exp(-dist * dist * 12.0);
+                } else if (vClassType < 1.5) {
+                    intensity = exp(-dist * dist * 8.0);
+                } else {
+                    float r = dist;
+                    float core = exp(-r * 25.0);
+                    float disk = exp(-r * 8.0);
+                    float halo = exp(-r * 3.0);
+                    intensity = core * 0.35 + disk * 0.45 + halo * 0.2;
+                    intensity *= 1.0 - smoothstep(0.2, 0.5, r);
+
+                    if (vClampRatio < 1.0) {
+                        float comp = clamp(1.0 / (vClampRatio * vClampRatio), 1.0, 10.0);
+                        intensity *= comp;
+                    }
+                }
+
+                float finalAlpha = intensity * vAlpha;
+                if (finalAlpha < 0.001) discard;
+
+                gl_FragColor = vec4(vColor, finalAlpha);
+            }
+        `,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+    });
+
+    overviewSky = new THREE.Points(geo, overviewSkyMaterial);
+    overviewSky.renderOrder = -1;
+    scene.add(overviewSky);
+}
+
 // Load Stars
 async function loadStars() {
     try {
         initGalaxy(); // Spawn the Milky Way
+        initOverviewSky(); // Spawn the procedural background
         createNebulae(); // Spawn nebula clouds
         frameGalaxy(); // Frame immediately; do not wait for the catalog request.
 
@@ -1574,6 +1726,12 @@ function animate() {
         }
     }
 
+    if (overviewSky) {
+        overviewSky.position.copy(camera.position);
+        const galDist = camera.position.distanceTo(galacticCenter);
+        overviewSkyMaterial.uniforms.uOpacity.value = calculateOverviewOpacity(galDist);
+    }
+
     if (currentSelectedStarIndex >= 0) {
         const star = starData[currentSelectedStarIndex];
         const dist = camera.position.distanceTo(targetNode);
@@ -1649,6 +1807,9 @@ window.addEventListener('resize', () => {
     }
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    if (overviewSkyMaterial) {
+        overviewSkyMaterial.uniforms.uDpr.value = Math.min(window.devicePixelRatio, 2);
+    }
 });
 
 // Init

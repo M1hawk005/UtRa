@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { calculateSkyOpacity, getSpectralColorHex, getPhotosphereParams, calculateDetailLOD, calculateReticleScale, calculateReticleOpacity, calculateRouteOpacity, getProvenance, applyMaterialOpacity } = require('./visual_logic.js');
+const { calculateSkyOpacity, calculateOverviewOpacity, getSpectralColorHex, getPhotosphereParams, calculateDetailLOD, calculateReticleScale, calculateReticleOpacity, calculateRouteOpacity, getProvenance, applyMaterialOpacity } = require('./visual_logic.js');
 
 function assertApprox(actual, expected) {
     if (Math.abs(actual - expected) > 1e-5) {
@@ -9,19 +9,37 @@ function assertApprox(actual, expected) {
 }
 
 describe('Visual Logic', () => {
+    it('calculateOverviewOpacity is 0 at <=12000, 1 at >=25000, and monotonic between', () => {
+        assert.strictEqual(calculateOverviewOpacity(10000), 0.0);
+        assert.strictEqual(calculateOverviewOpacity(12000), 0.0);
+        assert.strictEqual(calculateOverviewOpacity(25000), 1.0);
+        assert.strictEqual(calculateOverviewOpacity(30000), 1.0);
 
-    it('local sky-macro opacity fade at measured radii 8216 and 49142', () => {
+        const val1 = calculateOverviewOpacity(15000);
+        const val2 = calculateOverviewOpacity(20000);
+        assert.ok(val1 > 0.0 && val1 < val2 && val2 < 1.0);
+    });
+
+    it('overview opacity and interior sky target opacity are exactly complementary across representative radii including 18500', () => {
+        const radii = [10000, 15000, 18500, 20000, 30000];
+        for (const r of radii) {
+            const overviewOp = calculateOverviewOpacity(r);
+            const interiorOp = calculateSkyOpacity(r).opacity;
+            assertApprox(overviewOp + interiorOp, 1.0);
+        }
+    });
+
+    it('local/overview sky-macro opacity complement at measured radii 8216 and 49142', () => {
         const localDist = 8216;
-        const edgeDist = 49142;
+        const overviewDist = 49142;
 
-        // Modified to expect an object return
         const localRes = calculateSkyOpacity(localDist);
         assertApprox(localRes.opacity, 1.0);
         assertApprox(localRes.lodBias, 0.0); // Inside: fine detail
 
-        const edgeRes = calculateSkyOpacity(edgeDist);
-        assertApprox(edgeRes.opacity, 0.0);
-        assert.ok(edgeRes.lodBias >= 4.0); // Outside: coarse only
+        const overviewRes = calculateSkyOpacity(overviewDist);
+        assertApprox(overviewRes.opacity, 0.0);
+        assert.ok(overviewRes.lodBias >= 4.0); // Outside: coarse only
     });
 
     it('mutates and returns provided out object to avoid allocation', () => {
