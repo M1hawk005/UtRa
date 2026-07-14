@@ -30,6 +30,24 @@ let galaxyFrameDistance = Infinity;
 let currentRouteHops = [];
 let resolvedRouteStars = [];
 let currentHopIndex = -1;
+let currentSelectedStarIndex = -1;
+let interiorSky;
+let detailGroup = new THREE.Group();
+let solMesh, starMesh;
+
+function highlightStar(idx) {
+    if (!starsGeometry || currentSelectedStarIndex === idx) return;
+    const isSelectedAttr = starsGeometry.getAttribute('isSelected');
+    if (currentSelectedStarIndex >= 0) {
+        isSelectedAttr.setX(currentSelectedStarIndex, 0.0);
+    }
+    currentSelectedStarIndex = idx;
+    if (currentSelectedStarIndex >= 0) {
+        isSelectedAttr.setX(currentSelectedStarIndex, 1.0);
+    }
+    isSelectedAttr.needsUpdate = true;
+}
+
 
 const _galaxyTarget = new THREE.Vector3();
 const _galaxyWorldScale = new THREE.Vector3();
@@ -199,12 +217,16 @@ function createNebulae() {
             varying vec3 vColor;
             varying float vAlpha;
             varying vec2 vUvOffset;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vColor = customColor;
                 vAlpha = alphaMask;
                 vUvOffset = position.xy * 0.05;
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
+                vCameraDist = length(mvPosition.xyz);
+                vGalacticDist = length(cameraPosition - modelMatrix[3].xyz);
                 gl_PointSize = clamp(size * (4600.0 / distance), 1.0, 30.0);
                 gl_Position = projectionMatrix * mvPosition;
             }
@@ -213,6 +235,8 @@ function createNebulae() {
             varying vec3 vColor;
             varying float vAlpha;
             varying vec2 vUvOffset;
+            varying float vCameraDist;
+            varying float vGalacticDist;
 
             float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
             float noise(vec2 p) {
@@ -240,6 +264,9 @@ function createNebulae() {
                 float n = fbm(p) * 0.3 + 0.7; // dampened noise, mostly smooth
                 float finalAlpha = glow * n * vAlpha * 0.12;
 
+                float fade = smoothstep(150.0, 500.0, vCameraDist);
+                float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
+                finalAlpha *= fade * macroFade;
                 if (finalAlpha < 0.005) discard;
                 gl_FragColor = vec4(vColor * 0.75, finalAlpha);
                 #include <tonemapping_fragment>
@@ -285,6 +312,60 @@ function initGalaxy() {
         Math.cos(ngpDec) * Math.sin(ngpRA),
         Math.sin(ngpDec)
     );
+
+    const textureLoader = new THREE.TextureLoader();
+    const esoTexture = textureLoader.load('assets/milky-way-eso.webp');
+    esoTexture.encoding = THREE.sRGBEncoding;
+    esoTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+    const skyGeo = new THREE.SphereGeometry(50000, 64, 32);
+    skyGeo.scale(-1, 1, 1);
+    const skyMat = new THREE.MeshBasicMaterial({
+        map: esoTexture,
+        depthWrite: false,
+        depthTest: false,
+        fog: false,
+        transparent: true,
+        opacity: 0.0
+    });
+function patchSkyShader(shader) {
+        if (!shader.uniforms.uLodBias) {
+            shader.uniforms.uLodBias = { value: 0.0 };
+        }
+        if (!shader.fragmentShader.includes('uniform float uLodBias;')) {
+            shader.fragmentShader = shader.fragmentShader.replace(
+                '#include <map_pars_fragment>',
+                '#include <map_pars_fragment>\nuniform float uLodBias;'
+            );
+        }
+        shader.fragmentShader = shader.fragmentShader.replace(
+            '#include <map_fragment>',
+            [
+                '#ifdef USE_MAP',
+                '\tvec4 texelColor = texture2D( map, vUv, uLodBias );',
+                '\ttexelColor = mapTexelToLinear( texelColor );',
+                '\tdiffuseColor *= texelColor;',
+                '#endif'
+            ].join('\n')
+        );
+}
+    skyMat.onBeforeCompile = (shader) => {
+        patchSkyShader(shader);
+        skyMat.userData.shader = shader;
+    };
+    interiorSky = new THREE.Mesh(skyGeo, skyMat);
+    interiorSky.renderOrder = -2;
+    interiorSky.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), galacticNorth);
+    scene.add(interiorSky);
+
+    const uiPanel = document.getElementById('panel-content');
+    const infoLine = document.createElement('div');
+    infoLine.id = 'sky-attribution';
+    infoLine.style.fontSize = '10px';
+    infoLine.style.marginTop = '10px';
+    infoLine.style.color = 'var(--text-dim)';
+    infoLine.innerHTML = `Interior sky: <a href="https://www.eso.org/public/images/eso0932a/" target="_blank" rel="noopener noreferrer" style="color:var(--highlight)">ESO/S. Brunier</a> | <span id="star-attribution"></span>`;
+    uiPanel.appendChild(infoLine);
 
     const bhGeometry = new THREE.PlaneGeometry(3500, 3500);
     const bhMaterial = new THREE.ShaderMaterial({
@@ -493,11 +574,15 @@ function initGalaxy() {
             attribute vec3 customColor;
             varying vec3 vColor;
             varying float vRand;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vColor = customColor;
                 vRand = fract(sin(dot(position.xyz, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
+                vCameraDist = length(mvPosition.xyz);
+                vGalacticDist = length(cameraPosition - modelMatrix[3].xyz);
                 gl_PointSize = clamp(size * (8200.0 / distance), 0.65, 18.0);
                 gl_Position = projectionMatrix * mvPosition;
             }
@@ -505,12 +590,17 @@ function initGalaxy() {
         fragmentShader: `
             varying vec3 vColor;
             varying float vRand;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
                 float gauss = exp(-dist * dist * 26.0);
                 float alpha = gauss * (0.45 + 0.32 * vRand);
+                float fade = smoothstep(150.0, 500.0, vCameraDist);
+                float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
+                alpha *= fade * macroFade;
                 if (alpha < 0.01) discard;
                 gl_FragColor = vec4(vColor * (0.85 + 0.65 * vRand), alpha);
                 #include <tonemapping_fragment>
@@ -573,22 +663,31 @@ function initGalaxy() {
             attribute float size;
             attribute vec3 customColor;
             varying vec3 vColor;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vColor = customColor;
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
+                vCameraDist = length(mvPosition.xyz);
+                vGalacticDist = length(cameraPosition - modelMatrix[3].xyz);
                 gl_PointSize = clamp(size * (2000.0 / distance), 1.0, 45.0);
                 gl_Position = projectionMatrix * mvPosition;
             }
         `,
         fragmentShader: `
             varying vec3 vColor;
+            varying float vCameraDist;
+            varying float vGalacticDist;
             void main() {
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
 
                 float alpha = pow(1.0 - (dist * 2.0), 2.0) * 0.15;
+                float fade = smoothstep(150.0, 500.0, vCameraDist);
+                float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
+                alpha *= fade * macroFade;
                 if (alpha < 0.002) discard;
                 gl_FragColor = vec4(0.0, 0.0, 0.0, alpha);
                 #include <tonemapping_fragment>
@@ -617,78 +716,194 @@ function initGalaxy() {
     focusRing = new THREE.Mesh(ringGeo, ringMat);
     focusRing.visible = false;
     scene.add(focusRing);
+
+    scene.add(detailGroup);
+
+    const hmiTexture = textureLoader.load('assets/sol-sdo-hmi.webp');
+    hmiTexture.encoding = THREE.sRGBEncoding;
+    const solGeo = new THREE.PlaneGeometry(2, 2);
+    const solMat = new THREE.ShaderMaterial({
+        uniforms: { map: { value: hmiTexture }, uTransitionOpacity: { value: 1.0 } },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                vec3 v0 = modelMatrix[0].xyz;
+                vec3 v1 = modelMatrix[1].xyz;
+                vec3 v2 = modelMatrix[2].xyz;
+                float scaleX = length(v0);
+                float scaleY = length(v1);
+
+                mat4 billboardMatrix = viewMatrix * modelMatrix;
+                billboardMatrix[0][0] = scaleX; billboardMatrix[0][1] = 0.0; billboardMatrix[0][2] = 0.0;
+                billboardMatrix[1][0] = 0.0; billboardMatrix[1][1] = scaleY; billboardMatrix[1][2] = 0.0;
+                billboardMatrix[2][0] = 0.0; billboardMatrix[2][1] = 0.0; billboardMatrix[2][2] = 1.0;
+
+                gl_Position = projectionMatrix * billboardMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D map;
+            uniform float uTransitionOpacity;
+            varying vec2 vUv;
+            void main() {
+                vec2 uv = vUv - 0.5;
+                float dist = length(uv);
+                if (dist > 0.49) discard;
+                vec4 texColor = texture2D(map, vUv);
+                float limb = 1.0 - pow(dist * 2.0, 4.0);
+                texColor.rgb *= 0.5 + 0.5 * limb;
+                gl_FragColor = vec4(texColor.rgb, uTransitionOpacity);
+            }
+        `,
+        transparent: true, depthTest: true, depthWrite: true, polygonOffset: true, polygonOffsetFactor: -1, blending: THREE.NormalBlending
+    });
+    solMesh = new THREE.Mesh(solGeo, solMat);
+    solMesh.visible = false;
+    detailGroup.add(solMesh);
+
+    const starDetailGeo = new THREE.SphereGeometry(1, 64, 64);
+    const starDetailMat = new THREE.ShaderMaterial({
+        uniforms: {
+            uColor: { value: new THREE.Color(1, 1, 1) },
+            uTime: { value: 0 },
+            uTransitionOpacity: { value: 1.0 },
+            uLimbDarkening: { value: 0.6 },
+            uGranulationContrast: { value: 0.2 },
+            uGranulationScale: { value: 30.0 }
+        },
+        vertexShader: `
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            varying vec3 vViewPosition;
+            void main() {
+                vNormal = normalMatrix * normal;
+                vPosition = position;
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                vViewPosition = -mvPosition.xyz;
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 uColor; uniform float uTime; uniform float uTransitionOpacity;
+            uniform float uLimbDarkening; uniform float uGranulationContrast; uniform float uGranulationScale;
+            varying vec3 vNormal; varying vec3 vPosition; varying vec3 vViewPosition;
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+            vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+            float snoise(vec3 v) {
+                const vec2  C = vec2(1.0/6.0, 1.0/3.0);
+                const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+                vec3 i  = floor(v + dot(v, C.yyy));
+                vec3 x0 = v - i + dot(i, C.xxx);
+                vec3 g = step(x0.yzx, x0.xyz);
+                vec3 l = 1.0 - g;
+                vec3 i1 = min(g.xyz, l.zxy); vec3 i2 = max(g.xyz, l.zxy);
+                vec3 x1 = x0 - i1 + C.xxx; vec3 x2 = x0 - i2 + C.yyy; vec3 x3 = x0 - D.yyy;
+                i = mod289(i);
+                vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0)) + i.y + vec4(0.0, i1.y, i2.y, 1.0)) + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+                float n_ = 0.142857142857; vec3 ns = n_ * D.wyz - D.xzx;
+                vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+                vec4 x_ = floor(j * ns.z); vec4 y_ = floor(j - 7.0 * x_);
+                vec4 x = x_ * ns.x + ns.yyyy; vec4 y = y_ * ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y);
+                vec4 b0 = vec4(x.xy, y.xy); vec4 b1 = vec4(x.zw, y.zw);
+                vec4 s0 = floor(b0) * 2.0 + 1.0; vec4 s1 = floor(b1) * 2.0 + 1.0;
+                vec4 sh = -step(h, vec4(0.0));
+                vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy; vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+                vec3 p0 = vec3(a0.xy, h.x); vec3 p1 = vec3(a0.zw, h.y); vec3 p2 = vec3(a1.xy, h.z); vec3 p3 = vec3(a1.zw, h.w);
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+                p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+                vec4 m = max(0.5 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m; return 105.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+            }
+            void main() {
+                vec3 p = normalize(vPosition);
+                vec3 n = normalize(vNormal); vec3 v = normalize(vViewPosition);
+                float ndotv = max(dot(n, v), 0.0);
+                float limb = mix(1.0, ndotv, uLimbDarkening);
+                float t = uTime * 0.05;
+                vec3 np = p * uGranulationScale;
+                float n1 = snoise(np + t); float n2 = snoise(np * 2.0 - t * 1.5); float n3 = snoise(np * 4.0 + t * 2.0);
+                float fbm = n1 * 0.5 + n2 * 0.25 + n3 * 0.125;
+                fbm = fbm * 0.5 + 0.5;
+                float granules = smoothstep(0.3, 0.7, fbm);
+                float faculae = snoise(p * 3.0 + t * 0.2) * 0.5 + 0.5;
+                float brightness = 1.0 - uGranulationContrast * (1.0 - granules) + faculae * 0.05;
+                vec3 finalColor = uColor * limb * brightness;
+                gl_FragColor = vec4(finalColor, uTransitionOpacity);
+                #include <tonemapping_fragment>
+                #include <encodings_fragment>
+            }
+        `,
+        transparent: true, depthTest: false
+    });
+    starMesh = new THREE.Mesh(starDetailGeo, starDetailMat);
+    starMesh.visible = false;
+    detailGroup.add(starMesh);
 }
 
 // GLSL Procedural Sun Shader replaces static canvas texture
 const vertexShader = `
+    uniform vec3 uGalacticCenter;
     attribute float size;
     attribute vec3 customColor;
+    attribute float isProcedural;
+    attribute float isSelected;
     varying vec3 vColor;
-    varying vec3 vPosition;
+    varying float vIsProcedural;
+    varying float vIsSelected;
+    varying float vGalacticDist;
+
     void main() {
         vColor = customColor;
-        vPosition = position;
+        vIsProcedural = isProcedural;
+        vIsSelected = isSelected;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vGalacticDist = length(cameraPosition - uGalacticCenter);
 
-        // Scale down size so stars don't look overly huge
-        float distance = -mvPosition.z;
-        float scaledSize = size * (200.0 / distance);
-        gl_PointSize = clamp(scaledSize, 1.5, 120.0);
-
+        float pointSize = clamp(size, 1.0, 4.0);
+        if (isSelected > 0.5) {
+            pointSize = 16.0;
+        }
+        gl_PointSize = pointSize;
         gl_Position = projectionMatrix * mvPosition;
     }
 `;
 
 const fragmentShader = `
     uniform vec3 color;
+    uniform float uSelectedPointOpacity;
     varying vec3 vColor;
-    varying vec3 vPosition;
-
-    // Fast GLSL Pseudo-Random Noise
-    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    float noise(vec2 p) {
-        vec2 i = floor(p); vec2 f = fract(p);
-        vec2 u = f * f * (3.0 - 2.0 * f);
-        return mix(mix(hash(i), hash(i + vec2(1.0,0.0)), u.x),
-                   mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), u.x), u.y);
-    }
-    float fbm(vec2 p) {
-        float f = 0.0;
-        f += 0.5000 * noise(p); p = p * 2.02;
-        f += 0.2500 * noise(p); p = p * 2.03;
-        f += 0.1250 * noise(p); p = p * 2.01;
-        f += 0.0625 * noise(p);
-        return f;
-    }
+    varying float vIsProcedural;
+    varying float vIsSelected;
+    varying float vGalacticDist;
 
     void main() {
         vec2 uv = gl_PointCoord.xy - vec2(0.5);
         float dist = length(uv);
         if (dist > 0.5) discard;
 
-        float bodyRadius = 0.35;
-        vec3 finalColor = vec3(0.0);
         float alpha = 1.0;
+        vec3 finalColor = color * vColor;
 
-        if (dist < bodyRadius) {
-            // Solar Granulation Surface
-            // Use vPosition to offset noise so every star looks unique!
-            vec2 p = (uv * 15.0) + vPosition.xy * 0.1;
-            float n = fbm(p);
-
-            // Limb darkening
-            float limb = 1.0 - (dist / bodyRadius);
-            limb = pow(limb, 0.4);
-
-            finalColor = color * vColor * (0.5 + n * 0.8) * limb;
+        if (vIsSelected > 0.5) {
+            float core = pow(1.0 - (dist * 2.0), 4.0);
+            float glow = pow(1.0 - (dist * 2.0), 1.5);
+            alpha = (core * 0.8 + glow * 0.5) * uSelectedPointOpacity;
+            finalColor *= 1.2;
         } else {
-            // Corona Glow
-            float glow = 1.0 - ((dist - bodyRadius) / (0.5 - bodyRadius));
-            glow = pow(glow, 2.5);
-            finalColor = color * vColor;
-            alpha = glow;
-            if (alpha < 0.02) discard;
+            float psf = pow(1.0 - (dist * 2.0), 2.5);
+            alpha = psf;
         }
+
+        if (vIsProcedural > 0.5) {
+            float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
+            alpha *= macroFade;
+        }
+
+        if (alpha < 0.01) discard;
 
         gl_FragColor = vec4(finalColor, alpha);
         #include <tonemapping_fragment>
@@ -766,6 +981,8 @@ async function loadStars() {
         const positions = new Float32Array(starData.length * 3);
         const colors = new Float32Array(starData.length * 3);
         const sizes = new Float32Array(starData.length);
+        const isProceduralArr = new Float32Array(starData.length);
+        const isSelectedArr = new Float32Array(starData.length);
 
         for (let i = 0; i < starData.length; i++) {
             const s = starData[i];
@@ -774,10 +991,6 @@ async function loadStars() {
             positions[i * 3 + 2] = s.z;
 
             let col = getSpectralColor(s.s);
-            if (s.n === "Sol") {
-                col = new THREE.Color(0xffff00); // Highlight sol
-            }
-
             colors[i * 3] = col.r;
             colors[i * 3 + 1] = col.g;
             colors[i * 3 + 2] = col.b;
@@ -789,17 +1002,22 @@ async function loadStars() {
 
             // Inverse mapping so smaller mag gives larger size
             let size = Math.max(1.0, 10.0 - mag);
-            if (s.n === "Sol") size = 15.0; // Make Sol prominent
             sizes[i] = size;
+            isProceduralArr[i] = (s.n && s.n.startsWith("GAL-")) ? 1.0 : 0.0;
+            isSelectedArr[i] = 0.0;
         }
 
         starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         starsGeometry.setAttribute('customColor', new THREE.BufferAttribute(colors, 3));
         starsGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+        starsGeometry.setAttribute('isProcedural', new THREE.BufferAttribute(isProceduralArr, 1));
+        starsGeometry.setAttribute('isSelected', new THREE.BufferAttribute(isSelectedArr, 1));
 
         const shaderMaterial = new THREE.ShaderMaterial({
             uniforms: {
-                color: { value: new THREE.Color(0xffffff) }
+                color: { value: new THREE.Color(0xffffff) },
+                uSelectedPointOpacity: { value: 1.0 },
+                uGalacticCenter: { value: galacticCenter }
             },
             vertexShader: vertexShader,
             fragmentShader: fragmentShader,
@@ -921,6 +1139,8 @@ function focusHop(index) {
     updateHopNavigation();
     const star = resolvedRouteStars[index];
     if (!star) return;
+    const idx = starData.indexOf(star);
+    if (idx >= 0) highlightStar(idx);
     flyToStar(star.x, star.y, star.z);
     showStarDetails(star, { routeIndex: index });
 }
@@ -1180,11 +1400,15 @@ detailsCard.hidden = true;
 detailsCard.setAttribute('aria-label', 'Focused star details');
 document.body.appendChild(detailsCard);
 
-function appendDetail(list, label, value) {
+function appendDetail(list, label, value, isHTML = false) {
     const term = document.createElement('dt');
     const detail = document.createElement('dd');
     term.textContent = label;
-    detail.textContent = value;
+    if (isHTML) {
+        detail.innerHTML = value;
+    } else {
+        detail.textContent = value;
+    }
     list.append(term, detail);
 }
 
@@ -1221,6 +1445,12 @@ function showStarDetails(star, options = {}) {
         : 'UNKNOWN');
     appendDetail(list, 'DISTANCE FROM SOL', distanceFromSol === null ? 'UNKNOWN' : `${distanceFromSol.toFixed(2)} PC`);
     appendDetail(list, 'ROUTE ROLE', routeIndex < 0 ? 'OFF ROUTE' : `${routeIndex === 0 ? 'ORIGIN' : routeIndex === currentRouteHops.length - 1 ? 'DESTINATION' : 'WAYPOINT'} · ${routeIndex + 1}/${currentRouteHops.length}`);
+    const isSol = star.n === 'Sol';
+    const isProcedural = !!(star.n && star.n.startsWith('GAL-'));
+    const provenance = getProvenance(isSol, isProcedural);
+    if (provenance) {
+        appendDetail(list, 'PROVENANCE', provenance, true);
+    }
     wikiLink.textContent = 'SEARCH WIKIPEDIA ↗';
     wikiLink.href = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(name)}`;
     wikiLink.target = '_blank';
@@ -1241,6 +1471,7 @@ function pickStar(clientX, clientY) {
     if (intersects.length > 0) {
         const idx = intersects[0].index;
         const star = starData[idx];
+        highlightStar(idx);
         showStarDetails(star);
         flyToStar(star.x, star.y, star.z);
     }
@@ -1316,16 +1547,11 @@ window.addEventListener('keydown', (event) => {
 
 // Animation Loop
 function animate() {
+    const now = performance.now();
     requestAnimationFrame(animate);
 
     if (scene.userData.blackHoleMat) {
         scene.userData.blackHoleMat.uniforms.time.value += 0.01;
-    }
-    if (scene.userData.galaxyMesh) {
-        scene.userData.galaxyMesh.rotation.z -= 0.0002;
-    }
-    if (scene.userData.nebulaMesh) {
-        scene.userData.nebulaMesh.rotation.z -= 0.00015;
     }
 
 
@@ -1336,6 +1562,52 @@ function animate() {
             isFlying = false;
             restoreGalaxyZoomLimit();
         }
+    }
+
+    if (interiorSky) {
+        interiorSky.position.copy(camera.position);
+        const galDist = camera.position.distanceTo(galacticCenter);
+        const skyRes = calculateSkyOpacity(galDist, _skyResOutput);
+        interiorSky.material.opacity = skyRes.opacity;
+        if (interiorSky.material.userData.shader) {
+            interiorSky.material.userData.shader.uniforms.uLodBias.value = skyRes.lodBias;
+        }
+    }
+
+    if (currentSelectedStarIndex >= 0) {
+        const star = starData[currentSelectedStarIndex];
+        const dist = camera.position.distanceTo(targetNode);
+        const lod = calculateDetailLOD(dist, camera.fov, window.innerHeight);
+        if (starsPoints) {
+            starsPoints.material.uniforms.uSelectedPointOpacity.value = lod.pointOpacity;
+        }
+
+        if (lod.visible) {
+            detailGroup.visible = true;
+            detailGroup.position.copy(targetNode);
+            detailGroup.scale.set(lod.detailScale, lod.detailScale, lod.detailScale);
+
+            if (star.n === 'Sol') {
+                solMesh.visible = true;
+                starMesh.visible = false;
+                solMesh.material.uniforms.uTransitionOpacity.value = lod.detailOpacity;
+            } else {
+                solMesh.visible = false;
+                starMesh.visible = true;
+                const params = getPhotosphereParams(star.s);
+                _starBaseColor.set(params.baseColor);
+                starMesh.material.uniforms.uColor.value.copy(_starBaseColor);
+                starMesh.material.uniforms.uLimbDarkening.value = params.limbDarkening;
+                starMesh.material.uniforms.uGranulationContrast.value = params.granulationContrast;
+                starMesh.material.uniforms.uGranulationScale.value = params.granulationScale;
+                starMesh.material.uniforms.uTime.value = now * 0.001;
+                starMesh.material.uniforms.uTransitionOpacity.value = lod.detailOpacity;
+            }
+        } else {
+            detailGroup.visible = false;
+        }
+    } else {
+        detailGroup.visible = false;
     }
 
     // Scale focus ring dynamically so it acts as a permanent HUD locator beacon when zoomed out
