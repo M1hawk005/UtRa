@@ -26,6 +26,22 @@ try {
     assert.ok(reticleScaleMatch, 'Should find calculateReticleScale call in animate');
     assert.strictEqual(reticleScaleMatch[1], '4.0', 'calculateReticleScale should be called with 4.0 matching 4.0 geometry diameter');
 
+    // Check wheel listener for object allocations
+    const wheelStart = src.indexOf("addEventListener('wheel'");
+    const wheelEnd = src.indexOf("passive: false", wheelStart);
+    const callbackStart = src.indexOf('{', src.indexOf('=>', wheelStart));
+    const callbackEnd = src.lastIndexOf('}, {', wheelEnd);
+    assert.ok(callbackStart > wheelStart && callbackEnd > callbackStart, 'Should extract the wheel callback body only');
+    const wheelBody = src.substring(callbackStart + 1, callbackEnd);
+    assert.ok(wheelBody.includes('calculateZoom'), 'Should find wheel event listener');
+    assert.ok(!wheelBody.includes('getBoundingClientRect'), 'Wheel listener should not call getBoundingClientRect (allocates DOMRect)');
+    assert.ok(!wheelBody.includes('new '), 'Wheel listener should not contain new object allocations');
+    assert.ok(!wheelBody.match(/:\s*\[/g), 'Wheel listener should not contain array literals');
+    assert.ok(!wheelBody.match(/:\s*\{/g), 'Wheel listener should not contain object literals');
+    assert.ok(!wheelBody.includes('function'), 'Wheel listener should not allocate functions');
+    assert.ok(!wheelBody.includes('=>'), 'Wheel listener should not allocate arrow functions');
+
+
     console.log('GREEN: Allocations tests passed.');
 } catch (e) {
     console.error('RED:', e.message);

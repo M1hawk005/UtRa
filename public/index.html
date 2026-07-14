@@ -19,13 +19,15 @@
         <div id="panel-content">
             <div class="wireframe-box"></div>
             <form id="nav-form">
-            <div class="input-group">
+            <div class="input-group combobox-wrapper">
                 <label for="start">SOURCE_NODE</label>
-                <input type="text" id="start" value="Sol" required>
+                <input type="text" id="start" value="Sol" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="start-listbox">
+                <ul id="start-listbox" role="listbox" class="autocomplete-listbox" hidden></ul>
             </div>
-            <div class="input-group">
+            <div class="input-group combobox-wrapper">
                 <label for="end">TARGET_NODE</label>
-                <input type="text" id="end" value="" required>
+                <input type="text" id="end" value="" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="end-listbox">
+                <ul id="end-listbox" role="listbox" class="autocomplete-listbox" hidden></ul>
             </div>
             <div class="input-group row">
                 <div>
@@ -70,10 +72,13 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <!-- Custom App Logic -->
+    <script src="js/autocomplete.js?v=1"></script>
     <script src="js/visual_logic.js"></script>
     <script src="js/overview_sky.js"></script>
-    <script src="js/pointer_state.js"></script>
+    <script src="js/transition.js"></script>
+    <script src="js/wheel_zoom.js"></script>
     <script src="js/star_picking.js"></script>
+    <script src="js/pointer_state.js"></script>
     <script src="app.js?v=10"></script>
 </body>
 </html>

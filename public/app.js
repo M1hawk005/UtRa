@@ -16,7 +16,12 @@ document.getElementById('canvas-container').appendChild(renderer.domElement);
 const controls = new THREE.OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
+controls.rotateSpeed = 0.18;
+controls.zoomSpeed = 1.15;
+controls.panSpeed = 0.95;
+controls.screenSpacePanning = true;
 controls.maxDistance = Infinity;
+controls.minDistance = calculateMinDistance(1.0, 0.55, camera.fov);
 
 // Variables
 let starsGeometry;
@@ -29,12 +34,21 @@ let focusRing; // Tactical ring to highlight selected star
 let galaxyFrameDistance = Infinity;
 let currentRouteHops = [];
 let resolvedRouteStars = [];
+let hopToMarkerIndex = [];
 let currentHopIndex = -1;
 let currentSelectedStarIndex = -1;
 let interiorSky;
 let overviewSky, overviewSkyMaterial;
 let detailGroup = new THREE.Group();
 let solMesh, starMesh;
+
+// Navigation flight variables
+let flightSourceNode = new THREE.Vector3();
+let flightSourceCam = new THREE.Vector3();
+let flightSourceMapCam = new THREE.Vector3();
+let flightSourceMapTarget = new THREE.Vector3();
+let flightTargetMapCam = new THREE.Vector3();
+let flightTargetMapTarget = new THREE.Vector3();
 
 function highlightStar(idx) {
     if (!starsGeometry || currentSelectedStarIndex === idx) return;
@@ -64,7 +78,7 @@ const _scratchVecC = new THREE.Vector3();
 const _starBaseColor = new THREE.Color();
 const _skyResOutput = { opacity: 0, lodBias: 0 };
 
-let flightTransitionState = { isActive: false, opacity: 1.0 };
+let flightTransitionState = createTransition({ duration: 900, fadeFraction: 0.25 });
 
 // A repeatable, inexpensive random source keeps the galaxy stable between loads.
 function galaxyRandom(seed = 0x6d696c6b) {
@@ -211,6 +225,9 @@ function createNebulae() {
     nGeo.setAttribute('alphaMask', new THREE.BufferAttribute(nAlpha, 1));
 
     const nMat = new THREE.ShaderMaterial({
+        uniforms: {
+            uTransitionOpacity: { value: 1.0 }
+        },
         vertexShader: `
             attribute float size;
             attribute vec3 customColor;
@@ -233,6 +250,7 @@ function createNebulae() {
             }
         `,
         fragmentShader: `
+            uniform float uTransitionOpacity;
             varying vec3 vColor;
             varying float vAlpha;
             varying vec2 vUvOffset;
@@ -269,7 +287,7 @@ function createNebulae() {
                 float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
                 finalAlpha *= fade * macroFade;
                 if (finalAlpha < 0.005) discard;
-                gl_FragColor = vec4(vColor * 0.75, finalAlpha);
+                gl_FragColor = vec4(vColor * 0.75, finalAlpha * uTransitionOpacity);
                 #include <tonemapping_fragment>
                 #include <encodings_fragment>
             }
@@ -330,26 +348,27 @@ function initGalaxy() {
         opacity: 0.0
     });
 function patchSkyShader(shader) {
-        if (!shader.uniforms.uLodBias) {
-            shader.uniforms.uLodBias = { value: 0.0 };
-        }
-        if (!shader.fragmentShader.includes('uniform float uLodBias;')) {
-            shader.fragmentShader = shader.fragmentShader.replace(
-                '#include <map_pars_fragment>',
-                '#include <map_pars_fragment>\nuniform float uLodBias;'
-            );
-        }
+    if (!shader.uniforms.uLodBias) {
+        shader.uniforms.uLodBias = { value: 0.0 };
+    }
+    if (!shader.fragmentShader.includes('uniform float uLodBias;')) {
         shader.fragmentShader = shader.fragmentShader.replace(
-            '#include <map_fragment>',
-            [
-                '#ifdef USE_MAP',
-                '\tvec4 texelColor = texture2D( map, vUv, uLodBias );',
-                '\ttexelColor = mapTexelToLinear( texelColor );',
-                '\tdiffuseColor *= texelColor;',
-                '#endif'
-            ].join('\n')
+            '#include <map_pars_fragment>',
+            '#include <map_pars_fragment>\nuniform float uLodBias;'
         );
+    }
+    shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        [
+            '#ifdef USE_MAP',
+            '\tvec4 texelColor = texture2D( map, vUv, uLodBias );',
+            '\ttexelColor = mapTexelToLinear( texelColor );',
+            '\tdiffuseColor *= texelColor;',
+            '#endif'
+        ].join('\n')
+    );
 }
+
     skyMat.onBeforeCompile = (shader) => {
         patchSkyShader(shader);
         skyMat.userData.shader = shader;
@@ -876,6 +895,7 @@ const vertexShader = `
 const fragmentShader = `
     uniform vec3 color;
     uniform float uSelectedPointOpacity;
+    uniform float uTransitionOpacity;
     varying vec3 vColor;
     varying float vIsProcedural;
     varying float vIsSelected;
@@ -903,6 +923,8 @@ const fragmentShader = `
             float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
             alpha *= macroFade;
         }
+
+        alpha *= uTransitionOpacity;
 
         if (alpha < 0.01) discard;
 
@@ -1091,6 +1113,25 @@ async function loadStars() {
         const res = await fetch('/api/stars');
         starData = await res.json();
 
+        // Prebuild index to prevent first-keystroke stutter
+        if (typeof buildSearchIndex === 'function') {
+            buildSearchIndex(starData);
+        }
+
+        // Bind only after the catalog exists. The getter keeps both controls on
+        // the current catalog if a later load replaces the starData array.
+        initAutocomplete(
+            document.getElementById('start'),
+            document.getElementById('start-listbox'),
+            () => starData
+        );
+        initAutocomplete(
+            document.getElementById('end'),
+            document.getElementById('end-listbox'),
+            () => starData
+        );
+        document.body.dataset.catalogReady = 'true';
+
         // Procedurally generate galaxy-wide stars using the same spiral arm distribution as initGalaxy
         const arms = 4;
         const armSpread = 0.6;
@@ -1169,7 +1210,8 @@ async function loadStars() {
             uniforms: {
                 color: { value: new THREE.Color(0xffffff) },
                 uSelectedPointOpacity: { value: 1.0 },
-                uGalacticCenter: { value: galacticCenter }
+                uGalacticCenter: { value: galacticCenter },
+                uTransitionOpacity: { value: 1.0 }
             },
             vertexShader: vertexShader,
             fragmentShader: fragmentShader,
@@ -1223,6 +1265,12 @@ function finiteCoordinate(value) {
 function resolveHopStar(hop) {
     if (!hop || (typeof hop !== 'object' && typeof hop !== 'string')) return null;
 
+    const name = hopName(hop);
+    if (name) {
+        const exact = starData.find(star => typeof star.n === 'string' && star.n.toLocaleLowerCase() === name.toLocaleLowerCase());
+        if (exact) return exact;
+    }
+
     let hopX = null, hopY = null, hopZ = null;
     if (typeof hop === 'object') {
         hopX = finiteCoordinate(hop.x ?? hop.position?.[0]);
@@ -1245,11 +1293,7 @@ function resolveHopStar(hop) {
         if (byPos) return byPos;
     }
 
-    const name = hopName(hop);
     if (name) {
-        const exact = starData.find(star => typeof star.n === 'string' && star.n.toLocaleLowerCase() === name.toLocaleLowerCase());
-        if (exact) return exact;
-
         const nameLower = name.toLocaleLowerCase();
         const compatible = starData.find(star => {
             if (typeof star.n !== 'string') return false;
@@ -1287,12 +1331,22 @@ function updateHopNavigation() {
 
 function focusHop(index) {
     if (!Number.isInteger(index) || index < 0 || index >= currentRouteHops.length) return;
+    const star = resolvedRouteStars[index];
+    if (!star) return; // Atomically fail if unresolved
+
     currentHopIndex = index;
     updateHopNavigation();
-    const star = resolvedRouteStars[index];
-    if (!star) return;
-    const idx = starData.indexOf(star);
-    if (idx >= 0) highlightStar(idx);
+
+    if (pathNodes && pathNodes.geometry) {
+        const hideAttr = pathNodes.geometry.getAttribute('hideMarker');
+        const markerIndex = hopToMarkerIndex[index];
+        if (hideAttr && markerIndex >= 0 && updateRouteMarkerVisibility(hideAttr.array, markerIndex)) {
+            hideAttr.needsUpdate = true;
+        }
+    }
+
+    const starIdx = starData.indexOf(star);
+    if (starIdx >= 0) highlightStar(starIdx);
     flyToStar(star.x, star.y, star.z);
     showStarDetails(star, { routeIndex: index });
 }
@@ -1303,18 +1357,24 @@ function drawPath(hops) {
         scene.remove(pathLine);
         pathLine.geometry.dispose();
         pathLine.material.dispose();
+        pathLine = null;
     }
     if (pathNodes) {
         scene.remove(pathNodes);
         pathNodes.geometry.dispose();
         pathNodes.material.dispose();
+        pathNodes = null;
     }
 
     const points = [];
-    for (let hop of hops) {
-        const star = resolveHopStar(hop);
+    hopToMarkerIndex = [];
+    for (let i = 0; i < hops.length; i++) {
+        const star = resolveHopStar(hops[i]);
         if (star) {
+            hopToMarkerIndex[i] = points.length;
             points.push(new THREE.Vector3(star.x, star.y, star.z));
+        } else {
+            hopToMarkerIndex[i] = -1;
         }
     }
 
@@ -1338,10 +1398,17 @@ function drawPath(hops) {
 
     // Add HUD nodes so the trajectory remains visible from galactic scale
     const nodesGeo = new THREE.BufferGeometry().setFromPoints(points);
+    const hiddenMarkers = new Float32Array(points.length);
+    const initialMarkerIndex = currentHopIndex >= 0 && currentHopIndex < hopToMarkerIndex.length ? hopToMarkerIndex[currentHopIndex] : -1;
+    if (initialMarkerIndex >= 0) updateRouteMarkerVisibility(hiddenMarkers, initialMarkerIndex);
+    nodesGeo.setAttribute('hideMarker', new THREE.BufferAttribute(hiddenMarkers, 1));
     const nodesMat = new THREE.ShaderMaterial({
         uniforms: { color: { value: new THREE.Color(0x00ffff) } },
         vertexShader: `
+            attribute float hideMarker;
+            varying float vHideMarker;
             void main() {
+                vHideMarker = hideMarker;
                 vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                 float distance = -mvPosition.z;
                 // Clamping min size to 8.0px ensures the route is ALWAYS visible from the edge of the galaxy!
@@ -1351,7 +1418,9 @@ function drawPath(hops) {
         `,
         fragmentShader: `
             uniform vec3 color;
+            varying float vHideMarker;
             void main() {
+                if (vHideMarker > 0.5) discard;
                 vec2 uv = gl_PointCoord.xy - vec2(0.5);
                 float dist = length(uv);
                 if (dist > 0.5) discard;
@@ -1366,10 +1435,68 @@ function drawPath(hops) {
     pathNodes = new THREE.Points(nodesGeo, nodesMat);
     scene.add(pathNodes);
 
-    if (points.length > 0) {
-        const p = points[0];
-        camera.position.set(p.x + 50, p.y + 50, p.z + 50);
-        controls.target.copy(p);
+}
+
+function applyRouteResult(hops) {
+    const list = document.getElementById('hop-list');
+    list.replaceChildren();
+    currentRouteHops = hops.slice();
+    resolvedRouteStars = currentRouteHops.map(resolveHopStar);
+
+    let firstResolved = -1;
+    for (let i = 0; i < resolvedRouteStars.length; i++) {
+        if (resolvedRouteStars[i]) {
+            firstResolved = i;
+            break;
+        }
+    }
+
+    currentHopIndex = -1;
+    drawPath(currentRouteHops);
+
+    currentRouteHops.forEach((hop, i) => {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        const name = hopName(hop) || `WAYPOINT ${i + 1}`;
+        const distance = typeof hop === 'object' && hop ? finiteCoordinate(hop.dist_pc) : null;
+        const nameSpan = document.createElement('span');
+        const distanceSpan = document.createElement('span');
+        button.type = 'button';
+        button.className = 'hop-button';
+        button.setAttribute('aria-label', `Focus route hop ${i + 1}: ${name}`);
+        nameSpan.className = 'hop-name';
+        nameSpan.textContent = `[${String(i + 1).padStart(2, '0')}] ${name}`;
+        distanceSpan.className = 'hop-distance';
+        distanceSpan.textContent = distance !== null && distance > 0 ? `+${distance.toFixed(2)} PC` : 'ORIGIN';
+        button.append(nameSpan, distanceSpan);
+        button.addEventListener('click', () => focusHop(i));
+        li.appendChild(button);
+        list.appendChild(li);
+    });
+
+    const sucDiv = document.getElementById('success-message');
+    sucDiv.classList.remove('hidden');
+
+    if (firstResolved !== -1) {
+        focusHop(firstResolved);
+    } else {
+        updateHopNavigation();
+        const detailsCard = document.getElementById('star-details');
+        if (detailsCard) {
+            detailsCard.hidden = true;
+            detailsCard.replaceChildren();
+        }
+        if (currentSelectedStarIndex >= 0) {
+            const isSelectedAttr = starsGeometry.getAttribute('isSelected');
+            if (isSelectedAttr) {
+                isSelectedAttr.setX(currentSelectedStarIndex, 0.0);
+                isSelectedAttr.needsUpdate = true;
+            }
+            currentSelectedStarIndex = -1;
+        }
+        if (focusRing) focusRing.visible = false;
+
+        finishFlightTransition(false);
     }
 }
 
@@ -1409,37 +1536,7 @@ document.getElementById('nav-form').addEventListener('submit', async (e) => {
         document.getElementById('res-obs').innerText = data.total_obs_time.toFixed(2);
         document.getElementById('res-ship').innerText = data.total_ship_time.toFixed(2);
 
-        const list = document.getElementById('hop-list');
-        list.replaceChildren();
-        currentRouteHops = hops.slice();
-        resolvedRouteStars = currentRouteHops.map(resolveHopStar);
-        currentHopIndex = currentRouteHops.length ? 0 : -1;
-
-        currentRouteHops.forEach((hop, i) => {
-            const li = document.createElement('li');
-            const button = document.createElement('button');
-            const name = hopName(hop) || `WAYPOINT ${i + 1}`;
-            const distance = typeof hop === 'object' && hop ? finiteCoordinate(hop.dist_pc) : null;
-            const nameSpan = document.createElement('span');
-            const distanceSpan = document.createElement('span');
-            button.type = 'button';
-            button.className = 'hop-button';
-            button.setAttribute('aria-label', `Focus route hop ${i + 1}: ${name}`);
-            nameSpan.className = 'hop-name';
-            nameSpan.textContent = `[${String(i + 1).padStart(2, '0')}] ${name}`;
-            distanceSpan.className = 'hop-distance';
-            distanceSpan.textContent = distance !== null && distance > 0 ? `+${distance.toFixed(2)} PC` : 'ORIGIN';
-            button.append(nameSpan, distanceSpan);
-            button.addEventListener('click', () => focusHop(i));
-            li.appendChild(button);
-            list.appendChild(li);
-        });
-
-        sucDiv.classList.remove('hidden');
-        drawPath(currentRouteHops);
-        updateHopNavigation();
-        if (currentRouteHops.length > 0) focusHop(0);
-
+        applyRouteResult(hops);
     } catch (e) {
         errDiv.innerText = "ERROR: " + (e.message || "ROUTE CALCULATION FAILED");
         errDiv.classList.remove('hidden');
@@ -1528,13 +1625,63 @@ function restoreGalaxyZoomLimit() {
     controls.maxDistance = Number.isFinite(galaxyFrameDistance) ? galaxyFrameDistance : 28000;
 }
 
+let fadingMaterials = null;
+let flightMayCommitDestination = false;
+function finishFlightTransition(commitDestination) {
+    if (commitDestination) {
+        controls.target.copy(targetNode);
+        camera.position.copy(camTargetNode);
+    }
+    flightTransitionState.progress = 1.0;
+    flightTransitionState.phase = 'IDLE';
+    flightTransitionState.opacity = 1.0;
+    flightTransitionState.mapArcT = 1.0;
+    flightTransitionState.arrivalT = 1.0;
+    flightTransitionState.isActive = false;
+    flightTransitionState.isFlying = false;
+    isFlying = false;
+    controls.enabled = true;
+    restoreGalaxyZoomLimit();
+    if (fadingMaterials) {
+        for (let i = 0; i < fadingMaterials.length; i++) {
+            const item = fadingMaterials[i];
+            applyMaterialOpacity(item.material, item.baseline);
+        }
+        fadingMaterials = null;
+    }
+    flightMayCommitDestination = false;
+}
+
 function flyToStar(x, y, z) {
+    flightMayCommitDestination = true;
     targetNode.set(x, y, z);
-    camTargetNode.set(x + 20, y + 20, z + 40);
+    camTargetNode.set(x, y - 6.32, z + 18.97); // Nice local approach pose
+
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    flightSourceNode.copy(controls.target);
+    flightSourceCam.copy(camera.position);
+
+    const frame = getGalaxyFrame();
+    const sourceMap = getMapPose(flightSourceNode.x, flightSourceNode.y, flightSourceNode.z, frame);
+    flightSourceMapTarget.copy(sourceMap.target);
+    flightSourceMapCam.copy(sourceMap.cam);
+
+    const destMap = getMapPose(targetNode.x, targetNode.y, targetNode.z, frame);
+    flightTargetMapTarget.copy(destMap.target);
+    flightTargetMapCam.copy(destMap.cam);
+
+    fadingMaterials = [];
+    if (starsGeometry && starsPoints && starsPoints.material) {
+        fadingMaterials.push({ material: starsPoints.material, baseline: 1.0 });
+    }
+    if (scene.userData.nebulaMesh) fadingMaterials.push({ material: scene.userData.nebulaMesh.material, baseline: 1.0 });
+
+    flightTransitionState = startTransition(flightTransitionState, { reducedMotion: prefersReducedMotion });
+
     isFlying = true;
-    // OrbitControls clamps camera distance in update(). Temporarily suspend the
-    // user zoom-out boundary so it cannot interfere with this camera flight.
     controls.maxDistance = Infinity;
+    controls.enabled = false;
 
     if (focusRing) {
         focusRing.position.set(x, y, z);
@@ -1632,9 +1779,9 @@ function pickStar(clientX, clientY, pointerType) {
 const canvasPointerState = new PointerState();
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
-    if (isFlying) {
-        isFlying = false;
-        restoreGalaxyZoomLimit();
+    if (flightTransitionState.isActive) {
+        flightMayCommitDestination = false;
+        interruptTransition(flightTransitionState);
     }
     canvasPointerState.onPointerDown(event.pointerId, event.clientX, event.clientY, event.timeStamp);
     try { renderer.domElement.setPointerCapture(event.pointerId); } catch (_) { /* Capture is best-effort. */ }
@@ -1656,6 +1803,81 @@ renderer.domElement.addEventListener('lostpointercapture', (event) => {
     canvasPointerState.onPointerCancel(event.pointerId);
 });
 
+let _canvasBoundsCache = { left: 0, top: 0, width: 800, height: 600 };
+function updateCanvasBoundsCache() {
+    if (renderer && renderer.domElement) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        _canvasBoundsCache.left = rect.left;
+        _canvasBoundsCache.top = rect.top;
+        _canvasBoundsCache.width = rect.width;
+        _canvasBoundsCache.height = rect.height;
+    }
+}
+// Init cache immediately once DOM is ready (or here is fine since canvas is appended at the top)
+updateCanvasBoundsCache();
+
+const _wheelRaycaster = new THREE.Raycaster();
+const _wheelPointer = new THREE.Vector2();
+const _wheelCursorRayDir = [0, 0, 0];
+const _wheelCameraPos = [0, 0, 0];
+const _wheelTargetPos = [0, 0, 0];
+const _wheelOutput = { newCameraPos: [0, 0, 0], newTarget: [0, 0, 0] };
+const _wheelZoomConfig = {
+    cameraPos: _wheelCameraPos,
+    targetPos: _wheelTargetPos,
+    cursorRayDir: _wheelCursorRayDir,
+    deltaY: 0,
+    deltaMode: 0,
+    viewportHeight: 0,
+    zoomSpeed: 0,
+    minDistance: 0,
+    maxDistance: 0,
+    out: _wheelOutput
+};
+
+renderer.domElement.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    if (flightTransitionState && flightTransitionState.isActive) {
+        flightMayCommitDestination = false;
+        interruptTransition(flightTransitionState);
+    }
+
+    const applyDelta = accumulateWheelDelta(event.deltaY, event.deltaMode, renderer.domElement.clientHeight);
+    if (applyDelta === 0) return;
+
+    _wheelPointer.x = ((event.clientX - _canvasBoundsCache.left) / _canvasBoundsCache.width) * 2 - 1;
+    _wheelPointer.y = -((event.clientY - _canvasBoundsCache.top) / _canvasBoundsCache.height) * 2 + 1;
+
+    _wheelRaycaster.setFromCamera(_wheelPointer, camera);
+    _wheelCursorRayDir[0] = _wheelRaycaster.ray.direction.x;
+    _wheelCursorRayDir[1] = _wheelRaycaster.ray.direction.y;
+    _wheelCursorRayDir[2] = _wheelRaycaster.ray.direction.z;
+
+    _wheelCameraPos[0] = camera.position.x;
+    _wheelCameraPos[1] = camera.position.y;
+    _wheelCameraPos[2] = camera.position.z;
+
+    _wheelTargetPos[0] = controls.target.x;
+    _wheelTargetPos[1] = controls.target.y;
+    _wheelTargetPos[2] = controls.target.z;
+
+    _wheelZoomConfig.deltaY = applyDelta;
+    _wheelZoomConfig.viewportHeight = renderer.domElement.clientHeight;
+    _wheelZoomConfig.zoomSpeed = controls.zoomSpeed;
+    _wheelZoomConfig.minDistance = controls.minDistance;
+    _wheelZoomConfig.maxDistance = controls.maxDistance;
+
+    const result = calculateZoom(_wheelZoomConfig);
+
+    if (result) {
+        camera.position.set(result.newCameraPos[0], result.newCameraPos[1], result.newCameraPos[2]);
+        controls.target.set(result.newTarget[0], result.newTarget[1], result.newTarget[2]);
+        controls.update();
+    }
+}, { passive: false, capture: true });
+
 document.getElementById('btn-prev-hop').addEventListener('click', () => focusHop(currentHopIndex - 1));
 document.getElementById('btn-next-hop').addEventListener('click', () => focusHop(currentHopIndex + 1));
 
@@ -1673,8 +1895,52 @@ window.addEventListener('keydown', (event) => {
 });
 
 // Animation Loop
+let previousFrameTime = performance.now();
+
+function updateFlight(deltaMs) {
+    if (!flightTransitionState.isActive) return;
+
+    updateTransition(flightTransitionState, deltaMs);
+
+    if (fadingMaterials) {
+        for (let i = 0; i < fadingMaterials.length; i++) {
+            const item = fadingMaterials[i];
+            applyMaterialOpacity(item.material, item.baseline * flightTransitionState.opacity);
+        }
+    }
+
+    if (flightTransitionState.isFlying) {
+        if (flightTransitionState.phase === 'DEPARTURE') {
+            controls.target.copy(flightSourceNode);
+            camera.position.copy(flightSourceCam);
+        } else if (flightTransitionState.phase === 'MAP_ARC') {
+            controls.target.lerpVectors(flightSourceMapTarget, flightTargetMapTarget, flightTransitionState.mapArcT);
+            _scratchVecA.lerpVectors(flightSourceMapCam, flightTargetMapCam, flightTransitionState.mapArcT);
+            const arcHeight = flightSourceMapTarget.distanceTo(flightTargetMapTarget) * 0.3;
+            const frame = getGalaxyFrame();
+            _scratchVecB.copy(frame.viewOut).multiplyScalar(arcHeight * Math.sin(flightTransitionState.mapArcT * Math.PI));
+            camera.position.copy(_scratchVecA).add(_scratchVecB);
+        } else if (flightTransitionState.phase === 'ARRIVAL') {
+            _scratchVecA.copy(camTargetNode).sub(targetNode).normalize();
+            _scratchVecB.copy(camTargetNode).addScaledVector(_scratchVecA, 200);
+            camera.position.lerpVectors(_scratchVecB, camTargetNode, flightTransitionState.arrivalT);
+            controls.target.copy(targetNode);
+        }
+    }
+
+    if (!flightTransitionState.isActive) {
+        // updateTransition marks the terminal sample inactive before the phase
+        // interpolation above runs, so commit and clean up the exact pose here.
+        const commitDestination = flightMayCommitDestination;
+        finishFlightTransition(commitDestination);
+        flightMayCommitDestination = false;
+    }
+}
+
 function animate() {
     const now = performance.now();
+    const deltaMs = Math.min(100, Math.max(0, now - previousFrameTime));
+    previousFrameTime = now;
     requestAnimationFrame(animate);
 
     if (scene.userData.blackHoleMat) {
@@ -1682,19 +1948,12 @@ function animate() {
     }
 
 
-    if (isFlying) {
-        controls.target.lerp(targetNode, 0.05);
-        camera.position.lerp(camTargetNode, 0.05);
-        if (controls.target.distanceTo(targetNode) < 1.0) {
-            isFlying = false;
-            restoreGalaxyZoomLimit();
-        }
-    }
+    updateFlight(deltaMs);
 
     if (interiorSky) {
         interiorSky.position.copy(camera.position);
         const galDist = camera.position.distanceTo(galacticCenter);
-        const skyRes = calculateSkyOpacity(galDist, _skyResOutput);
+        const skyRes = calculateSkyOpacity(galDist, flightTransitionState.opacity, flightTransitionState.isActive, OPACITY_FLOOR, _skyResOutput);
         interiorSky.material.opacity = skyRes.opacity;
         if (interiorSky.material.userData.shader) {
             interiorSky.material.userData.shader.uniforms.uLodBias.value = skyRes.lodBias;
@@ -1704,7 +1963,7 @@ function animate() {
     if (overviewSky) {
         overviewSky.position.copy(camera.position);
         const galDist = camera.position.distanceTo(galacticCenter);
-        overviewSkyMaterial.uniforms.uOpacity.value = calculateOverviewOpacity(galDist);
+        overviewSkyMaterial.uniforms.uOpacity.value = calculateOverviewOpacity(galDist, flightTransitionState.opacity, flightTransitionState.isActive, OPACITY_FLOOR);
     }
 
     if (currentSelectedStarIndex >= 0) {
@@ -1723,7 +1982,7 @@ function animate() {
             if (star.n === 'Sol') {
                 solMesh.visible = true;
                 starMesh.visible = false;
-                solMesh.material.uniforms.uTransitionOpacity.value = lod.detailOpacity;
+                solMesh.material.uniforms.uTransitionOpacity.value = lod.detailOpacity * flightTransitionState.opacity;
             } else {
                 solMesh.visible = false;
                 starMesh.visible = true;
@@ -1734,7 +1993,7 @@ function animate() {
                 starMesh.material.uniforms.uGranulationContrast.value = params.granulationContrast;
                 starMesh.material.uniforms.uGranulationScale.value = params.granulationScale;
                 starMesh.material.uniforms.uTime.value = now * 0.001;
-                starMesh.material.uniforms.uTransitionOpacity.value = lod.detailOpacity;
+                starMesh.material.uniforms.uTransitionOpacity.value = lod.detailOpacity * flightTransitionState.opacity;
             }
         } else {
             detailGroup.visible = false;
@@ -1782,6 +2041,7 @@ window.addEventListener('resize', () => {
     }
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    updateCanvasBoundsCache();
     if (overviewSkyMaterial) {
         overviewSkyMaterial.uniforms.uDpr.value = Math.min(window.devicePixelRatio, 2);
     }

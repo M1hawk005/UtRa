@@ -130,6 +130,12 @@ try {
     assert.ok(!starFrag.includes('vec3(1.0)'), 'Fragment should not mix selected star with white');
     assert.ok(!starFrag.includes('vec3(0.0, 1.0, 1.0)'), 'Fragment should not mix selected star with cyan');
 
+    // Shader regression must assert exactly one selected-star/finalAlpha discard branch where intended
+    const discardCount = (starFrag.match(/if\s*\(\s*alpha\s*<\s*0\.01\s*\)\s*discard\s*;/g) || []).length;
+    assert.strictEqual(discardCount, 1, 'Star fragment shader must have exactly one alpha < 0.01 discard branch');
+    const mutatedStarFrag = starFrag.replace('if (alpha < 0.01) discard;', 'if (alpha < 0.01) discard;\nif (alpha < 0.01) discard;');
+    assert.notStrictEqual((mutatedStarFrag.match(/if\s*\(\s*alpha\s*<\s*0\.01\s*\)\s*discard\s*;/g) || []).length, 1, 'Duplicate discard insertion must fail');
+
 
     // GREEN: New Galactocentric LOD thresholds
     const localRadius = 8178; // Sol galactocentric distance
@@ -150,6 +156,19 @@ try {
         assert.ok(!matBlock.match(/1\.0\s*-\s*smoothstep/), `${mat} should not use reversed smoothstep edges or inverse`);
         assert.ok(matBlock.match(/smoothstep\(\s*12000\.0\s*,\s*25000\.0\s*,\s*vGalacticDist\s*\)/), `${mat} should use defined smoothstep on vGalacticDist`);
     }
+
+    const nMatStart = src.indexOf('const nMat =');
+    const nMatEnd = src.indexOf('blending:', nMatStart);
+    const nMatBlock = src.substring(nMatStart, nMatEnd);
+    assert.match(nMatBlock, /uTransitionOpacity\s*:\s*\{\s*value\s*:\s*1\.0\s*\}/, 'Nebula material must declare uTransitionOpacity uniform initialized to 1.0');
+    assert.match(nMatBlock, /uniform\s+float\s+uTransitionOpacity\s*;/, 'Nebula fragment shader must declare uTransitionOpacity uniform');
+
+    const nebulaDiscardCount = (nMatBlock.match(/if\s*\(\s*finalAlpha\s*<\s*0\.005\s*\)\s*discard\s*;/g) || []).length;
+    assert.strictEqual(nebulaDiscardCount, 1, 'Nebula fragment shader must have exactly one finalAlpha < 0.005 discard branch');
+    const mutatedNMatBlock = nMatBlock.replace('if (finalAlpha < 0.005) discard;', 'if (finalAlpha < 0.005) discard;\nif (finalAlpha < 0.005) discard;');
+    assert.notStrictEqual((mutatedNMatBlock.match(/if\s*\(\s*finalAlpha\s*<\s*0\.005\s*\)\s*discard\s*;/g) || []).length, 1, 'Duplicate nebula discard insertion must fail');
+
+    assert.match(src, /fadingMaterials\.push\(\{\s*material:\s*scene\.userData\.nebulaMesh\.material/, 'Nebula material must be pushed to fadingMaterials for runtime update');
 
     assertOverviewSource(appSource);
 

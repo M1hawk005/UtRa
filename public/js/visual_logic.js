@@ -1,10 +1,13 @@
-function calculateSkyOpacity(galDist, out) {
+function calculateSkyOpacity(galDist, transitionOpacity, isActive, opacityFloor, out) {
     // MathUtils.smoothstep equivalent
     let x = (galDist - 12000) / (25000 - 12000);
     x = Math.max(0, Math.min(1, x));
     const macroFade = x * x * (3 - 2 * x);
 
     let skyAlpha = 1.0 - macroFade;
+    if (isActive) {
+        skyAlpha = Math.max(skyAlpha * transitionOpacity, opacityFloor * (1.0 - macroFade));
+    }
 
     // Background sky must gain spatial-frequency LOD.
     // At the outer blend edge (macroFade=1), only coarse low-frequency structure may appear.
@@ -19,13 +22,23 @@ function calculateSkyOpacity(galDist, out) {
     return { opacity: skyAlpha, lodBias: lodBias };
 }
 
-function calculateOverviewOpacity(galDist) {
+function calculateOverviewOpacity(galDist, transitionOpacity, isActive, opacityFloor) {
     let x = (galDist - 12000) / (25000 - 12000);
     x = Math.max(0, Math.min(1, x));
-    return x * x * (3 - 2 * x);
+    const macroFade = x * x * (3 - 2 * x);
+
+    let overviewAlpha = macroFade;
+    if (isActive) {
+        overviewAlpha *= transitionOpacity;
+    }
+
+    return overviewAlpha;
 }
 
+
+
 function calculateDetailLOD(dist, fovDegrees, viewportHeight) {
+    // Continuous LOD morph across a camera-distance band wider than one wheel step.
     // Transition band: distance 18.0 (far, morph starts) down to 8.0 (close, morph ends)
     const distFar = 18.0;
     const distClose = 8.0;
@@ -84,6 +97,11 @@ function calculateRouteOpacity(dist) {
     let x = (dist - 13.0) / (16.0 - 13.0);
     x = Math.max(0.0, Math.min(1.0, x));
     return x * x * (3 - 2 * x); // smoothstep
+}
+
+function calculateMinDistance(modelRadius, maxFraction, fovDegrees) {
+    const maxRad = maxFraction * fovDegrees * Math.PI / 180;
+    return modelRadius / Math.tan(maxRad / 2);
 }
 
 function getProvenance(isSol, isProcedural) {
@@ -172,6 +190,19 @@ function applyMaterialOpacity(material, opacityValue) {
     }
 }
 
+function updateRouteMarkerVisibility(hideAttrArray, activeIndex) {
+    if (!hideAttrArray) return false;
+    let changed = false;
+    for (let i = 0; i < hideAttrArray.length; i++) {
+        const expected = i === activeIndex ? 1.0 : 0.0;
+        if (hideAttrArray[i] !== expected) {
+            hideAttrArray[i] = expected;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 
 
 if (typeof module !== 'undefined') {
@@ -184,7 +215,9 @@ if (typeof module !== 'undefined') {
         calculateReticleScale,
         calculateReticleOpacity,
         calculateRouteOpacity,
+        calculateMinDistance,
         getProvenance,
+        updateRouteMarkerVisibility,
         getPhotosphereParams
     };
 }
