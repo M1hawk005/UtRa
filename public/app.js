@@ -31,6 +31,22 @@ let currentRouteHops = [];
 let resolvedRouteStars = [];
 let currentHopIndex = -1;
 
+const _galaxyTarget = new THREE.Vector3();
+const _galaxyWorldScale = new THREE.Vector3();
+const _galaxyDiskX = new THREE.Vector3();
+const _galaxyDiskY = new THREE.Vector3();
+const _galaxyDiskNormal = new THREE.Vector3();
+const _galaxyViewOut = new THREE.Vector3();
+const _galaxyFrameOutput = { target: _galaxyTarget, diskY: _galaxyDiskY, viewOut: _galaxyViewOut, distance: 0 };
+
+const _scratchVecA = new THREE.Vector3();
+const _scratchVecB = new THREE.Vector3();
+const _scratchVecC = new THREE.Vector3();
+const _starBaseColor = new THREE.Color();
+const _skyResOutput = { opacity: 0, lodBias: 0 };
+
+let flightTransitionState = { isActive: false, opacity: 1.0 };
+
 // A repeatable, inexpensive random source keeps the galaxy stable between loads.
 function galaxyRandom(seed = 0x6d696c6b) {
     return function() {
@@ -55,27 +71,28 @@ function getGalaxyFrame() {
 
     // The generated disk is galaxy-local XY. Frame only that geometry, not the
     // separately rendered catalog/background stars or child-object bounds.
-    const target = galaxy.getWorldPosition(new THREE.Vector3());
-    const worldScale = galaxy.getWorldScale(new THREE.Vector3());
+    galaxy.getWorldPosition(_galaxyTarget);
+    galaxy.getWorldScale(_galaxyWorldScale);
     const radius = galaxy.geometry.boundingSphere.radius
-        * Math.max(Math.abs(worldScale.x), Math.abs(worldScale.y), Math.abs(worldScale.z));
+        * Math.max(Math.abs(_galaxyWorldScale.x), Math.abs(_galaxyWorldScale.y), Math.abs(_galaxyWorldScale.z));
 
-    const diskX = new THREE.Vector3(1, 0, 0).transformDirection(galaxy.matrixWorld);
-    const diskY = new THREE.Vector3(0, 1, 0).transformDirection(galaxy.matrixWorld);
-    const diskNormal = new THREE.Vector3(0, 0, 1).transformDirection(galaxy.matrixWorld);
+    _galaxyDiskX.set(1, 0, 0).transformDirection(galaxy.matrixWorld);
+    _galaxyDiskY.set(0, 1, 0).transformDirection(galaxy.matrixWorld);
+    _galaxyDiskNormal.set(0, 0, 1).transformDirection(galaxy.matrixWorld);
 
     // View along a vector that is inclined ~60 degrees from the normal
     // for an elliptical disk appearance with a diagonal/horizontal major axis.
-    const viewOut = diskNormal.clone().multiplyScalar(0.45)
-        .addScaledVector(diskY, -0.75)
-        .addScaledVector(diskX, 0.45)
+    _galaxyViewOut.copy(_galaxyDiskNormal).multiplyScalar(0.45)
+        .addScaledVector(_galaxyDiskY, -0.75)
+        .addScaledVector(_galaxyDiskX, 0.45)
         .normalize();
     const verticalHalfFov = THREE.MathUtils.degToRad(camera.fov * 0.5);
     const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * camera.aspect);
     const limitingHalfFov = Math.min(verticalHalfFov, horizontalHalfFov);
     const distance = radius / Math.sin(limitingHalfFov) * 1.35; // increased margin
 
-    return { target, diskY, viewOut, distance };
+    _galaxyFrameOutput.distance = distance;
+    return _galaxyFrameOutput;
 }
 
 function updateGalaxyZoomLimit() {
@@ -1325,8 +1342,17 @@ function animate() {
     if (focusRing && focusRing.visible) {
         focusRing.lookAt(camera.position);
         let dist = camera.position.distanceTo(focusRing.position);
-        let scale = Math.max(1.0, dist / 80.0);
+        let scale = calculateReticleScale(dist, camera.fov, window.innerHeight, 36, 4.0);
         focusRing.scale.set(scale, scale, scale);
+
+        let op = calculateReticleOpacity(dist);
+        applyMaterialOpacity(focusRing.material, 0.38 * flightTransitionState.opacity * op);
+    }
+
+    if (pathLine) {
+        let pathDist = camera.position.distanceTo(controls.target);
+        let pathOp = calculateRouteOpacity(pathDist);
+        applyMaterialOpacity(pathLine.material, 0.8 * flightTransitionState.opacity * pathOp);
     }
 
     controls.update();
