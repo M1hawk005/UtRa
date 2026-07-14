@@ -3,3 +3,4 @@
 data/nosql_mock/stars/
 .gopath/
 *.exe
+public/node_modules/
