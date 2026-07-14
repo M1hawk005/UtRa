@@ -1543,9 +1543,6 @@ function flyToStar(x, y, z) {
 }
 
 // Persistent star details and intentional canvas picking
-const raycaster = new THREE.Raycaster();
-raycaster.params.Points.threshold = 1.5;
-
 const detailsCard = document.createElement('aside');
 detailsCard.id = 'star-details';
 detailsCard.hidden = true;
@@ -1611,74 +1608,52 @@ function showStarDetails(star, options = {}) {
     detailsCard.hidden = false;
 }
 
-function pickStar(clientX, clientY) {
-    if (!starsPoints) return;
+function pickStar(clientX, clientY, pointerType) {
+    if (!starsPoints || !starData) return;
     const bounds = renderer.domElement.getBoundingClientRect();
-    const mouse = new THREE.Vector2();
-    mouse.x = ((clientX - bounds.left) / bounds.width) * 2 - 1;
-    mouse.y = -((clientY - bounds.top) / bounds.height) * 2 + 1;
-    raycaster.setFromCamera(mouse, camera);
 
-    const intersects = raycaster.intersectObject(starsPoints);
-    if (intersects.length > 0) {
-        const idx = intersects[0].index;
-        const star = starData[idx];
-        highlightStar(idx);
+    camera.updateMatrixWorld();
+    const viewProj = new THREE.Matrix4();
+    viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+
+    const positions = starsPoints.geometry.attributes.position.array;
+    const bestIndex = StarPicking.pickStarScreenSpace(
+        positions, starData, viewProj.elements, bounds, clientX, clientY, pointerType
+    );
+
+    if (bestIndex >= 0) {
+        const star = starData[bestIndex];
+        highlightStar(bestIndex);
         showStarDetails(star);
         flyToStar(star.x, star.y, star.z);
     }
 }
 
-const activeCanvasPointers = new Map();
-const PICK_MOVEMENT_THRESHOLD = 7;
-let canvasGestureWasMultiTouch = false;
+const canvasPointerState = new PointerState();
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
     if (isFlying) {
         isFlying = false;
         restoreGalaxyZoomLimit();
     }
-    activeCanvasPointers.set(event.pointerId, {
-        startX: event.clientX,
-        startY: event.clientY,
-        moved: false,
-        canceled: false,
-        isTouch: event.pointerType === 'touch'
-    });
-    if (activeCanvasPointers.size > 1) {
-        canvasGestureWasMultiTouch = true;
-        activeCanvasPointers.forEach(pointer => { pointer.canceled = true; });
-    }
+    canvasPointerState.onPointerDown(event.pointerId, event.clientX, event.clientY, event.timeStamp);
     try { renderer.domElement.setPointerCapture(event.pointerId); } catch (_) { /* Capture is best-effort. */ }
 });
 
 renderer.domElement.addEventListener('pointermove', (event) => {
-    const pointer = activeCanvasPointers.get(event.pointerId);
-    if (!pointer) return;
-    const threshold = pointer.isTouch ? 15 : PICK_MOVEMENT_THRESHOLD;
-    if (Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) >= threshold) {
-        pointer.moved = true;
-        pointer.canceled = true;
-    }
+    canvasPointerState.onPointerMove(event.pointerId, event.clientX, event.clientY);
 });
 
-function finishCanvasPointer(event, canceled = false) {
-    const pointer = activeCanvasPointers.get(event.pointerId);
-    if (!pointer) return;
-    const remainingBeforeDelete = activeCanvasPointers.size;
-    const threshold = pointer.isTouch ? 15 : PICK_MOVEMENT_THRESHOLD;
-    const movedAtRelease = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) >= threshold;
-    const intentionalTap = !canceled && !pointer.canceled && !pointer.moved && !movedAtRelease
-        && !canvasGestureWasMultiTouch && remainingBeforeDelete === 1;
-    activeCanvasPointers.delete(event.pointerId);
-    if (activeCanvasPointers.size === 0) canvasGestureWasMultiTouch = false;
-    if (intentionalTap) pickStar(event.clientX, event.clientY);
-}
+renderer.domElement.addEventListener('pointerup', (event) => {
+    canvasPointerState.onPointerUp(event.pointerId, event.clientX, event.clientY, event.timeStamp, event.pointerType, pickStar);
+});
 
-renderer.domElement.addEventListener('pointerup', event => finishCanvasPointer(event));
-renderer.domElement.addEventListener('pointercancel', event => finishCanvasPointer(event, true));
-renderer.domElement.addEventListener('lostpointercapture', event => {
-    if (activeCanvasPointers.has(event.pointerId)) finishCanvasPointer(event, true);
+renderer.domElement.addEventListener('pointercancel', (event) => {
+    canvasPointerState.onPointerCancel(event.pointerId);
+});
+
+renderer.domElement.addEventListener('lostpointercapture', (event) => {
+    canvasPointerState.onPointerCancel(event.pointerId);
 });
 
 document.getElementById('btn-prev-hop').addEventListener('click', () => focusHop(currentHopIndex - 1));
