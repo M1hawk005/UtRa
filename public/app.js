@@ -78,6 +78,14 @@ const _scratchVecC = new THREE.Vector3();
 const _starBaseColor = new THREE.Color();
 const _skyResOutput = { opacity: 0, lodBias: 0 };
 
+function calculateBlackHoleLod(distance, fovDegrees, viewportHeight, proxyRadius) {
+    const safeDistance = Math.max(distance, proxyRadius + 0.001);
+    const focalPixels = viewportHeight / (2 * Math.tan(fovDegrees * Math.PI / 360));
+    const radiusPixels = proxyRadius * focalPixels / safeDistance;
+    const t = Math.max(0, Math.min(1, (radiusPixels - 1.5) / (12.0 - 1.5)));
+    return t * t * (3 - 2 * t);
+}
+
 let flightTransitionState = createTransition({ duration: 900, fadeFraction: 0.25 });
 
 // A repeatable, inexpensive random source keeps the galaxy stable between loads.
@@ -387,48 +395,230 @@ function patchSkyShader(shader) {
     infoLine.innerHTML = `Interior sky: <a href="https://www.eso.org/public/images/eso0932a/" target="_blank" rel="noopener noreferrer" style="color:var(--highlight)">ESO/S. Brunier</a> | <span id="star-attribution"></span>`;
     uiPanel.appendChild(infoLine);
 
-    const bhGeometry = new THREE.PlaneGeometry(3500, 3500);
-    const bhMaterial = new THREE.ShaderMaterial({
+    // Real-time Schwarzschild-inspired visual approximation, not full GR ray tracing.
+    // The compact proxy and fixed loop ceiling bound fragment cost; its displayed
+    // radius is deliberately illustrative because parsec scene units cannot resolve Sgr A*.
+    const blackHoleSchwarzschildRadius = 28.0;
+    const blackHoleProxyRadius = blackHoleSchwarzschildRadius * 8.5;
+    const blackHoleGeometry = new THREE.SphereGeometry(
+        blackHoleProxyRadius,
+        isMobile ? 20 : 32,
+        isMobile ? 12 : 20
+    );
+    const blackHoleWorldToLocal = new THREE.Matrix4();
+    const blackHoleLocalToWorldDirection = new THREE.Matrix3();
+    const blackHoleSkyWorldToLocal = new THREE.Matrix3();
+    const blackHoleMaterial = new THREE.ShaderMaterial({
         uniforms: {
-            time: { value: 0.0 }
+            uTime: { value: 0.0 },
+            uWorldToLocal: { value: blackHoleWorldToLocal },
+            uLocalToWorldDirection: { value: blackHoleLocalToWorldDirection },
+            uSkyWorldToLocal: { value: blackHoleSkyWorldToLocal },
+            uSkyTexture: { value: esoTexture },
+            uSchwarzschildRadius: { value: blackHoleSchwarzschildRadius },
+            uLodFactor: { value: 0.0 },
+            uTransitionOpacity: { value: 1.0 }
         },
         vertexShader: `
-            varying vec2 vUv;
+            varying vec3 vLocalPosition;
+            varying vec3 vWorldPosition;
             void main() {
-                vUv = uv;
+                vLocalPosition = position;
+                vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
                 gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
             }
         `,
         fragmentShader: `
-            uniform float time;
-            varying vec2 vUv;
+            #define MAX_LENS_STEPS 46
+            uniform float uTime;
+            uniform mat4 uWorldToLocal;
+            uniform mat3 uLocalToWorldDirection;
+            uniform mat3 uSkyWorldToLocal;
+            uniform sampler2D uSkyTexture;
+            uniform float uSchwarzschildRadius;
+            uniform float uLodFactor;
+            uniform float uTransitionOpacity;
+            varying vec3 vLocalPosition;
+            varying vec3 vWorldPosition;
+
+            float hash(vec2 p) {
+                return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+            }
+
+            float noise(vec2 p) {
+                vec2 cell = floor(p);
+                vec2 f = fract(p);
+                f = f * f * (3.0 - 2.0 * f);
+                return mix(mix(hash(cell), hash(cell + vec2(1.0, 0.0)), f.x),
+                           mix(hash(cell + vec2(0.0, 1.0)), hash(cell + vec2(1.0)), f.x), f.y);
+            }
+
+            float fbm(vec2 p) {
+                float value = 0.0;
+                value += 0.500 * noise(p); p = p * 2.03 + 7.1;
+                value += 0.250 * noise(p); p = p * 2.01 + 3.7;
+                value += 0.125 * noise(p);
+                return value;
+            }
+
+            vec2 skyUv(vec3 worldDirection) {
+                vec3 d = normalize(uSkyWorldToLocal * worldDirection);
+                float longitude = atan(d.z, d.x);
+                float latitude = acos(clamp(d.y, -1.0, 1.0));
+                return vec2(fract(longitude / 6.28318530718), latitude / 3.14159265359);
+            }
+
+            vec3 diskTemperature(float radius, float doppler, float gravitationalRedshift) {
+                float heat = pow(clamp((7.5 - radius) / 5.85, 0.0, 1.0), 0.58);
+                vec3 outerColor = vec3(0.72, 0.075, 0.012);
+                vec3 middleColor = vec3(1.0, 0.34, 0.045);
+                vec3 innerColor = vec3(1.0, 0.91, 0.72);
+                vec3 thermal = mix(outerColor, middleColor, smoothstep(0.0, 0.62, heat));
+                thermal = mix(thermal, innerColor, smoothstep(0.58, 1.0, heat));
+                thermal *= vec3(clamp(doppler, 0.75, 1.28), 1.0, clamp(1.0 / doppler, 0.72, 1.22));
+                return thermal * gravitationalRedshift;
+            }
+
             void main() {
-                vec2 uv = vUv - 0.5;
-                float r = length(uv);
-                if (r > 0.5) discard;
+                vec3 cameraLocal = (uWorldToLocal * vec4(cameraPosition, 1.0)).xyz / uSchwarzschildRadius;
+                vec3 surfaceLocal = (uWorldToLocal * vec4(vWorldPosition, 1.0)).xyz / uSchwarzschildRadius;
+                vec3 rayDirection = normalize(surfaceLocal - cameraLocal);
 
-                float core = exp(-r * r * 18.0);
-                float glow = exp(-r * r * 5.0);
-                float intensity = core * 0.8 + glow * 0.4;
+                float halfB = dot(cameraLocal, rayDirection);
+                float c = dot(cameraLocal, cameraLocal) - 72.25;
+                float root = sqrt(max(0.0, halfB * halfB - c));
+                float nearDistance = max(0.0, -halfB - root);
+                float farDistance = max(nearDistance, -halfB + root);
+                vec3 position = cameraLocal + rayDirection * nearDistance;
+                float travelled = nearDistance;
+                float stepBudget = mix(24.0, float(MAX_LENS_STEPS), uLodFactor);
+                float minimumRadius = length(position);
+                vec3 accumulated = vec3(0.0);
+                float opacity = 0.0;
+                bool captured = false;
+                bool escaped = false;
 
-                if (intensity < 0.01) discard;
-                vec3 finalColor = mix(vec3(1.0, 0.75, 0.45), vec3(1.0, 0.95, 0.85), core);
-                gl_FragColor = vec4(finalColor, intensity * 0.8);
+                for (int lensStep = 0; lensStep < MAX_LENS_STEPS; lensStep++) {
+                    if (float(lensStep) >= stepBudget) break;
+                    float r = length(position);
+                    minimumRadius = min(minimumRadius, r);
+                    if (r <= 1.0) {
+                        captured = true;
+                        break;
+                    }
+                    if (travelled >= farDistance || (r >= 8.5 && dot(position, rayDirection) > 0.0)) {
+                        escaped = true;
+                        break;
+                    }
+
+                    float stepLength = clamp(r * 0.16, 0.09, 0.80);
+                    stepLength = min(stepLength, farDistance - travelled);
+                    vec3 inward = -position / max(r, 0.001);
+                    vec3 transverseGravity = inward - rayDirection * dot(inward, rayDirection);
+                    float boundaryTaper = 1.0 - smoothstep(6.2, 8.45, r);
+                    float deflection = boundaryTaper * stepLength * 0.72 / max(r * r, 0.16);
+                    rayDirection = normalize(rayDirection + transverseGravity * deflection);
+                    vec3 nextPosition = position + rayDirection * stepLength;
+
+                    // Integrate a geometrically thin, finite atmosphere instead of a
+                    // zero-thickness crossing.  In-plane rays therefore accumulate
+                    // one finite optical path rather than hitting a surface each step.
+                    vec3 segment = nextPosition - position;
+                    vec3 diskSample = position + segment * 0.5;
+                    float diskRadius = length(diskSample.xy);
+                    const float diskHalfThickness = 0.18;
+                    vec4 verticalCoordinates = (position.z + segment.z * vec4(0.125, 0.375, 0.625, 0.875))
+                        / diskHalfThickness;
+                    float verticalDensity = dot(
+                        exp(-verticalCoordinates * verticalCoordinates), vec4(0.25)
+                    );
+                    if (diskRadius >= 1.65 && diskRadius <= 7.5 && verticalDensity > 0.001) {
+                            float azimuth = atan(diskSample.y, diskSample.x);
+                            vec2 turbulenceCoordinates = vec2(log(diskRadius) * 3.2,
+                                azimuth * 0.72 - uTime * (0.22 + 0.28 / diskRadius));
+                            float turbulence = 0.62 + 0.58 * fbm(turbulenceCoordinates);
+                            float edgeFade = smoothstep(1.65, 1.95, diskRadius)
+                                * (1.0 - smoothstep(6.3, 7.5, diskRadius));
+                            float orbitalSpeed = clamp(0.78 / sqrt(max(diskRadius - 0.72, 0.35)), 0.08, 0.64);
+                            vec3 velocity = normalize(vec3(-diskSample.y, diskSample.x, 0.0)) * orbitalSpeed;
+                            vec3 directionToObserver = normalize(-rayDirection);
+                            float gamma = inversesqrt(max(1.0 - orbitalSpeed * orbitalSpeed, 0.20));
+                            float doppler = clamp(1.0 / (gamma * (1.0 - dot(velocity, directionToObserver))), 0.58, 1.72);
+                            float gravitationalRedshift = sqrt(max(0.0, 1.0 - 1.0 / diskRadius));
+                            float emissivity = edgeFade * turbulence * pow(doppler, 3.0)
+                                * gravitationalRedshift * gravitationalRedshift;
+                            float absorptionDensity = edgeFade * (0.72 + 0.28 * turbulence);
+                            float opticalDepth = verticalDensity * absorptionDensity * stepLength * 0.12;
+                            float layerOpacity = 1.0 - exp(-opticalDepth);
+                            vec3 emission = diskTemperature(diskRadius, doppler, gravitationalRedshift)
+                                * emissivity * 7.0;
+                            accumulated += (1.0 - opacity) * emission * layerOpacity;
+                            opacity += (1.0 - opacity) * layerOpacity;
+                            if (opacity > 0.985) break;
+                    }
+
+                    position = nextPosition;
+                    travelled += stepLength;
+                }
+
+                // Only replace framebuffer content where bending is visually material.
+                // This reaches zero far inside the 8.5-rs proxy, so its silhouette
+                // can never become a textured sphere-shaped patch.
+                float lensInfluence = 1.0 - smoothstep(3.8, 5.8, minimumRadius);
+                lensInfluence *= escaped ? 1.0 : 0.0;
+
+                vec3 background = vec3(0.0);
+                if (escaped && !captured && lensInfluence > 0.0) {
+                    vec3 escapedWorldDirection = normalize(uLocalToWorldDirection * rayDirection);
+                    background = texture2D(uSkyTexture, skyUv(escapedWorldDirection)).rgb
+                        * lensInfluence;
+                }
+
+                float photonRing = exp(-pow((minimumRadius - 1.5) / 0.115, 2.0));
+                photonRing *= escaped ? 1.0 : 0.35;
+                vec3 ringColor = vec3(1.0, 0.78, 0.46) * photonRing * (0.7 + 0.8 * uLodFactor);
+                vec3 finalColor = captured
+                    ? vec3(0.0)
+                    : background * (1.0 - opacity) + accumulated + ringColor;
+                float rayOpacity = captured ? 1.0 : 1.0 - (1.0 - opacity)
+                    * (1.0 - max(photonRing, lensInfluence));
+                float finalOpacity = uTransitionOpacity * rayOpacity;
+                if (finalOpacity < 0.003) discard;
+                gl_FragColor = vec4(finalColor * uTransitionOpacity, finalOpacity);
                 #include <tonemapping_fragment>
                 #include <encodings_fragment>
             }
         `,
         transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide
+        premultipliedAlpha: true,
+        depthTest: true,
+        depthWrite: true,
+        side: THREE.BackSide
     });
 
-    const blackHole = new THREE.Mesh(bhGeometry, bhMaterial);
+    const blackHole = new THREE.Mesh(blackHoleGeometry, blackHoleMaterial);
     blackHole.position.copy(galacticCenter);
     blackHole.lookAt(galacticCenter.clone().add(galacticNorth));
+    blackHole.updateMatrixWorld(true);
+    blackHoleWorldToLocal.copy(blackHole.matrixWorld).invert();
+    blackHoleLocalToWorldDirection.setFromMatrix4(blackHole.matrixWorld);
+    interiorSky.updateMatrixWorld(true);
+    _scratchVecA.set(1, 0, 0).applyQuaternion(interiorSky.quaternion);
+    _scratchVecB.set(0, 1, 0).applyQuaternion(interiorSky.quaternion);
+    _scratchVecC.set(0, 0, 1).applyQuaternion(interiorSky.quaternion);
+    blackHoleSkyWorldToLocal.set(
+        _scratchVecA.x, _scratchVecA.y, _scratchVecA.z,
+        _scratchVecB.x, _scratchVecB.y, _scratchVecB.z,
+        _scratchVecC.x, _scratchVecC.y, _scratchVecC.z
+    );
+    // Transparent proxy integration is approximate: draw after the sky but before
+    // particles, and write the proxy exit-surface depth. This deterministically
+    // preserves foreground particles while suppressing unlensed background bleed.
+    blackHole.renderOrder = -0.5;
     scene.add(blackHole);
-    scene.userData.blackHoleMat = bhMaterial;
+    scene.userData.blackHole = blackHole;
+    scene.userData.blackHoleProxyRadius = blackHoleProxyRadius;
+    scene.userData.blackHoleMat = blackHoleMaterial;
 
     const bulgeCount = isMobile ? 10000 : 18000;
     const diskCount = isMobile ? 95000 : 180000;
@@ -1943,8 +2133,22 @@ function animate() {
     previousFrameTime = now;
     requestAnimationFrame(animate);
 
-    if (scene.userData.blackHoleMat) {
-        scene.userData.blackHoleMat.uniforms.time.value += 0.01;
+    if (scene.userData.blackHoleMat && scene.userData.blackHole) {
+        const blackHoleMaterial = scene.userData.blackHoleMat;
+        scene.userData.blackHole.updateMatrixWorld();
+        blackHoleMaterial.uniforms.uWorldToLocal.value.copy(scene.userData.blackHole.matrixWorld).invert();
+        blackHoleMaterial.uniforms.uLocalToWorldDirection.value.setFromMatrix4(scene.userData.blackHole.matrixWorld);
+        const blackHoleDistance = camera.position.distanceTo(galacticCenter);
+        const blackHoleLod = calculateBlackHoleLod(
+            blackHoleDistance,
+            camera.fov,
+            window.innerHeight,
+            scene.userData.blackHoleProxyRadius
+        );
+        blackHoleMaterial.uniforms.uTime.value = now * 0.001;
+        blackHoleMaterial.uniforms.uLodFactor.value = blackHoleLod;
+        blackHoleMaterial.uniforms.uTransitionOpacity.value = blackHoleLod * flightTransitionState.opacity;
+        scene.userData.blackHole.visible = blackHoleLod > 0.001;
     }
 
 
