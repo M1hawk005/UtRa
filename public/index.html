@@ -9,47 +9,62 @@
 </head>
 <body>
     <div id="canvas-container"></div>
+    <div id="floating-search" class="combobox-wrapper floating-search-container">
+        <div style="display: flex;">
+            <label for="star-search" class="sr-only">Search</label>
+            <input type="text" id="star-search" placeholder="Search stars or Sagittarius A*" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-listbox" style="flex-grow: 1;">
+            <button id="btn-route-mode" type="button" aria-label="Directions" aria-expanded="false" aria-controls="ui-panel" title="Directions" style="width: auto; margin-top: 0; border: none; border-left: 1px solid var(--border); padding: 0 1rem; min-height: 44px; display: flex; align-items: center; justify-content: center;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 12 12 22 2 12"></polygon><path d="M9 16v-3a2 2 0 0 1 2-2h4"></path><polyline points="12 8 15 11 12 14"></polyline></svg>
+            </button>
+        </div>
+        <ul id="search-listbox" role="listbox" class="autocomplete-listbox" hidden></ul>
+    </div>
     
-    <div id="ui-panel">
+    <div id="ui-panel" class="hidden directions-card" aria-hidden="true" inert>
         <div class="panel-header" id="panel-header">
-            <h1 class="drag-handle">UTRA_NAV_SYS_v1</h1>
-            <button id="toggle-panel" type="button" aria-label="Collapse navigation panel" aria-expanded="true">_</button>
+            <h1 class="drag-handle sr-only">Directions</h1>
+            <div style="display:flex; align-items:center; width: 100%; gap: 0.5rem; margin-bottom: 1rem;">
+                <button id="btn-search-mode" type="button" aria-label="Return to search mode" aria-controls="floating-search" style="margin: 0; padding: 0; width: 44px; min-height: 44px; border: none; background: transparent; display:flex; justify-content:center; align-items:center;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                </button>
+                <div style="font-size: 1.1rem; flex-grow: 1;">Directions</div>
+                <button id="toggle-panel" type="button" aria-label="Collapse navigation panel" aria-expanded="true" style="border: none; background: transparent;">_</button>
+            </div>
         </div>
         
         <div id="panel-content">
-            <div class="wireframe-box"></div>
             <form id="nav-form">
             <div class="input-group combobox-wrapper">
-                <label for="start">SOURCE_NODE</label>
+                <label for="start">Start</label>
                 <input type="text" id="start" value="Sol" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="start-listbox">
                 <ul id="start-listbox" role="listbox" class="autocomplete-listbox" hidden></ul>
             </div>
             <div class="input-group combobox-wrapper">
-                <label for="end">TARGET_NODE</label>
+                <label for="end">Destination</label>
                 <input type="text" id="end" value="" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="end-listbox">
                 <ul id="end-listbox" role="listbox" class="autocomplete-listbox" hidden></ul>
             </div>
-            <div class="input-group row">
+            <div class="input-group row advanced-row">
                 <div>
-                    <label for="dist">MAX_JUMP_RNG (PC)</label>
+                    <label for="dist">Max jump (pc)</label>
                     <input type="number" id="dist" value="500" step="1" required>
                 </div>
                 <div>
-                    <label for="speed">VELOCITY_c</label>
+                    <label for="speed">Speed (c)</label>
                     <input type="number" id="speed" value="0.99" step="0.01" max="0.999" min="0.01" required>
                 </div>
             </div>
-            <button type="submit">INITIATE_ROUTING</button>
+            <button type="submit">Find route</button>
         </form>
 
         <div id="results" class="hidden">
             <div id="error-message" class="error hidden"></div>
             <div id="success-message">
-                <h3>// TELEMETRY_DATA</h3>
+                <h3>Telemetry</h3>
                 <div class="route-summary" aria-label="Route summary">
-                    <p><span>TOT_DISTANCE</span><strong id="res-dist" class="highlight"></strong></p>
-                    <p><span>OBS_TIME (YRS)</span><strong id="res-obs"></strong></p>
-                    <p><span>SHP_TIME (YRS)</span><strong id="res-ship" class="highlight"></strong></p>
+                    <p><span>Total Distance</span><strong id="res-dist" class="highlight"></strong></p>
+                    <p><span>Observer Time (yrs)</span><strong id="res-obs"></strong></p>
+                    <p><span>Ship Time (yrs)</span><strong id="res-ship" class="highlight"></strong></p>
                 </div>
 
                 <div class="hop-controls" aria-label="Route hop navigation">
@@ -61,12 +76,21 @@
                     <button id="btn-next-hop" type="button" aria-label="Focus next route hop">&#8594;</button>
                 </div>
                 
-                <h3 class="mt-10">// WAYPOINT_SEQ</h3>
+                <button id="btn-map-mode" type="button" class="mt-10" style="width:100%" aria-label="Enter fullscreen map mode">Map view</button>
+
+                <h3 class="mt-10">Waypoints</h3>
                 <ol id="hop-list" aria-label="Route waypoints"></ol>
             </div>
         </div>
         </div>
     </div>
+
+    <div id="map-mode-controls" class="hidden" aria-hidden="true">
+        <button id="map-btn-prev-hop" class="floating-btn left" type="button" aria-label="Focus previous route hop">&#8592;</button>
+        <button id="map-btn-next-hop" class="floating-btn right" type="button" aria-label="Focus next route hop">&#8594;</button>
+        <button id="map-btn-restore" class="floating-btn bottom" type="button" aria-label="Restore UI">Show UI</button>
+    </div>
+
 
     <!-- Three.js and OrbitControls -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>

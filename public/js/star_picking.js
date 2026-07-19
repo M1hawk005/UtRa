@@ -30,6 +30,7 @@
         let bestIndex = -1;
         let minDistSq = Infinity;
         let bestDepth = Infinity;
+        let pickedSgrA = false;
 
         const numStars = starData.length;
         for (let i = 0; i < numStars; i++) {
@@ -82,10 +83,50 @@
                     } else if (depth === bestDepth) {
                         if (i < bestIndex) {
                             bestIndex = i;
+                            pickedSgrA = false;
                         }
                     }
                 }
             }
+        }
+
+        if (typeof window !== 'undefined') {
+            const sgrAW = m15;
+            if (sgrAW > 0) {
+                const sgrAZ = m14;
+                if (sgrAZ >= -sgrAW && sgrAZ <= sgrAW) {
+                    const sgrAX = m12;
+                    if (sgrAX >= -sgrAW && sgrAX <= sgrAW) {
+                        const sgrAY = m13;
+                        if (sgrAY >= -sgrAW && sgrAY <= sgrAW) {
+                            const ndcX = sgrAX / sgrAW;
+                            const ndcY = sgrAY / sgrAW;
+                            const screenX = (ndcX + 1.0) * 0.5 * bounds.width;
+                            const screenY = (-ndcY + 1.0) * 0.5 * bounds.height;
+                            const dx = screenX - px;
+                            const dy = screenY - py;
+                            const distSq = dx * dx + dy * dy;
+                            if (distSq <= radiusSq) {
+                                const depth = sgrAZ / sgrAW;
+                                if (distSq < minDistSq) {
+                                    minDistSq = distSq;
+                                    bestDepth = depth;
+                                    pickedSgrA = true;
+                                } else if (distSq === minDistSq) {
+                                    if (depth < bestDepth) {
+                                        bestDepth = depth;
+                                        pickedSgrA = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (pickedSgrA) {
+            return { n: 'Sagittarius A*', isSgrA: true, x: 0, y: 0, z: 0 };
         }
 
         return bestIndex;

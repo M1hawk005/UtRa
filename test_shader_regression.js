@@ -168,7 +168,7 @@ try {
     const mutatedNMatBlock = nMatBlock.replace('if (finalAlpha < 0.005) discard;', 'if (finalAlpha < 0.005) discard;\nif (finalAlpha < 0.005) discard;');
     assert.notStrictEqual((mutatedNMatBlock.match(/if\s*\(\s*finalAlpha\s*<\s*0\.005\s*\)\s*discard\s*;/g) || []).length, 1, 'Duplicate nebula discard insertion must fail');
 
-    assert.match(src, /fadingMaterials\.push\(\{\s*material:\s*scene\.userData\.nebulaMesh\.material/, 'Nebula material must be pushed to fadingMaterials for runtime update');
+    assert.match(src, /if\s*\(\s*!options\.isFocus\s*\)\s*\{[\s\S]*?fadingMaterials\.push\(\{\s*material:\s*scene\.userData\.nebulaMesh\.material/, 'Nebula material must be pushed to fadingMaterials for runtime update only during generic map relocation (!options.isFocus)');
 
     assertOverviewSource(appSource);
 
@@ -195,6 +195,11 @@ try {
     assert.ok(starDetailMatSrc.includes('noise(') || starDetailMatSrc.includes('cellular') || starDetailMatSrc.includes('fBm'), 'Should require multi-octave or cellular/convective structure');
     assert.ok(starDetailMatSrc.includes('smoothstep') || starDetailMatSrc.includes('pow'), 'Should require intergranular-lane shaping');
 
+    // TDD tests for spots and faculae
+    assert.ok(starDetailMatSrc.includes('uActivity'), 'starDetailMat should have uActivity uniform for spots/faculae');
+    assert.ok(starDetailMatSrc.includes('uSeed'), 'starDetailMat should have uSeed uniform for stable identity');
+    assert.ok(starDetailMatSrc.match(/spot|magnetic/i), 'starDetailMat should have sparse darker magnetic/spot regions');
+
     assert.ok(starDetailMatSrc.includes('vPosition') || starDetailMatSrc.includes('vNormal'), 'Should use object-space 3D coordinates for procedural texture');
 
     // RED: Prove fragment shader does not use matrices
@@ -216,6 +221,32 @@ try {
     console.log('GREEN: Inferred photosphere shader tests passed.');
 } catch (e) {
     console.error('RED (Photosphere):', e.message);
+    process.exit(1);
+}
+
+try {
+    // Corona/Chromosphere tests
+    const coronaMatStart = src.indexOf('const coronaMat = new THREE.ShaderMaterial');
+    assert.ok(coronaMatStart > -1, 'Should find coronaMat block for the corona shell');
+    const coronaMatEnd = src.indexOf('});', coronaMatStart);
+    const coronaMatSrc = src.substring(coronaMatStart, coronaMatEnd);
+
+    assert.ok(coronaMatSrc.includes('uColor'), 'coronaMat should have uColor uniform');
+    assert.ok(coronaMatSrc.match(/blending:\s*THREE\.AdditiveBlending/), 'coronaMat should use AdditiveBlending');
+
+    // No dense particle halo check
+    assert.ok(!src.includes('new THREE.Points(coronaGeo'), 'Corona should not be a Point cloud');
+
+    // Sgr A* exclusion in focusHop
+    const focusHopIdx = src.indexOf('function focusHop');
+    assert.ok(focusHopIdx > -1, 'focusHop function must exist');
+    const focusHopEnd = src.indexOf('function', focusHopIdx + 1);
+    const focusHopBody = src.substring(focusHopIdx, focusHopEnd > -1 ? focusHopEnd : src.length);
+    assert.ok(focusHopBody.includes('star.isSgrA'), 'focusHop should check if target is Sgr A* to hide stellar details');
+
+    console.log('GREEN: Corona and special target exclusion tests passed.');
+} catch (e) {
+    console.error('RED (Corona/Exclusion):', e.message);
     process.exit(1);
 }
 
@@ -277,17 +308,22 @@ try {
 
 try {
     // Selection Wiring
-    const pickStarIdx = src.indexOf('function pickStar');
-    assert.ok(pickStarIdx > -1, 'pickStar function must exist');
-    const pickStarEnd = src.indexOf('function', pickStarIdx + 1);
-    const pickStarBody = src.substring(pickStarIdx, pickStarEnd > -1 ? pickStarEnd : src.length);
-    assert.ok(pickStarBody.includes('highlightStar('), 'pickStar must call highlightStar');
+    function assertSelectionWiring(source) {
+        const focusHopIdx = source.indexOf('function focusHop');
+        assert.ok(focusHopIdx > -1, 'focusHop function must exist');
+        const focusHopEnd = source.indexOf('function', focusHopIdx + 1);
+        const focusHopBody = source.substring(focusHopIdx, focusHopEnd > -1 ? focusHopEnd : source.length);
+        assert.ok(!focusHopBody.includes('highlightStar('), 'focusHop must NOT call highlightStar directly');
 
-    const focusHopIdx = src.indexOf('function focusHop');
-    assert.ok(focusHopIdx > -1, 'focusHop function must exist');
-    const focusHopEnd = src.indexOf('function', focusHopIdx + 1);
-    const focusHopBody = src.substring(focusHopIdx, focusHopEnd > -1 ? focusHopEnd : src.length);
-    assert.ok(focusHopBody.includes('highlightStar('), 'focusHop must call highlightStar');
+        const finishIdx = source.indexOf('function finishFlightTransition');
+        assert.ok(finishIdx > -1, 'finishFlightTransition function must exist');
+        const finishEnd = source.indexOf('function', finishIdx + 1);
+        const finishBody = source.substring(finishIdx, finishEnd > -1 ? finishEnd : source.length);
+
+        assert.match(finishBody, /if\s*\(\s*commitDestination\s*\)\s*\{[\s\S]*?highlightStar\s*\(/, 'finishFlightTransition must commit highlightStar');
+        assert.match(finishBody, /else\s*\{[\s\S]*?currentHopIndex\s*=\s*committedHopIndex;[\s\S]*?highlightStar\s*\(/, 'finishFlightTransition must rollback highlightStar');
+    }
+    assertSelectionWiring(src);
 
     console.log('GREEN: Selection wiring tests passed.');
 } catch (e) {

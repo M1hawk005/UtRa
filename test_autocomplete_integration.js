@@ -3,6 +3,16 @@ const vm = require('vm');
 const assert = require('assert');
 const { spawnSync } = require('child_process');
 
+// Accessibility source regression
+const htmlSource = fs.readFileSync(__dirname + '/public/index.html', 'utf8');
+assert.match(htmlSource, /<label[^>]*for="star-search"[^>]*class="[^"]*sr-only[^"]*"[^>]*>/, 'star-search label must have sr-only class');
+assert.doesNotMatch(htmlSource, /<label[^>]*for="star-search"[^>]*style="display:\s*none;?"/, 'star-search label must not have inline display:none');
+
+const cssSource = fs.readFileSync(__dirname + '/public/style.css', 'utf8');
+assert.match(cssSource, /\.sr-only\s*\{/, 'must define .sr-only utility in css');
+assert.doesNotMatch(cssSource, /\.sr-only\s*\{[^}]*display:\s*none/, 'sr-only must not use display:none');
+assert.doesNotMatch(cssSource, /\.sr-only\s*\{[^}]*visibility:\s*hidden/, 'sr-only must not use visibility:hidden');
+
 function stripComments(source) {
     let result = '';
     let state = 'code';
@@ -229,12 +239,14 @@ vm.runInNewContext(`
 
 // Wait for loadStars promise
 setTimeout(() => {
-    assert.strictEqual(initAutocompleteCalls.length, 2, 'must bind exactly start and end autocomplete once each');
+    assert.strictEqual(initAutocompleteCalls.length, 3, 'must bind exactly start, end, and star-search autocomplete once each');
     assert.strictEqual(productionIndexBuilds, 1, 'production load path must explicitly build the index exactly once');
     assert.strictEqual(initAutocompleteCalls[0].input.id, 'start', 'first bind must be start input');
     assert.strictEqual(initAutocompleteCalls[0].listbox.id, 'start-listbox', 'first bind must be start listbox');
     assert.strictEqual(initAutocompleteCalls[1].input.id, 'end', 'second bind must be end input');
     assert.strictEqual(initAutocompleteCalls[1].listbox.id, 'end-listbox', 'second bind must be end listbox');
+    assert.strictEqual(initAutocompleteCalls[2].input.id, 'star-search', 'third bind must be star-search input');
+    assert.strictEqual(initAutocompleteCalls[2].listbox.id, 'search-listbox', 'third bind must be search listbox');
     assert.strictEqual(typeof initAutocompleteCalls[0].catalogFn, 'function', 'must provide live getter');
     assert.strictEqual(initAutocompleteCalls[0].catalogFn().length, 2, 'getter must return loaded catalog');
 
@@ -244,9 +256,9 @@ setTimeout(() => {
             env: { ...process.env, AUTOCOMPLETE_NOOP_MUTANT: '1' },
             encoding: 'utf8'
         });
-        assert.notStrictEqual(mutant.status, 0, 'valid no-op mutation of both real callees must be rejected');
-        assert.match(mutant.stderr, /must bind exactly start and end autocomplete once each/,
-            'no-op mutation must fail specifically because neither binding spy ran');
+        assert.notStrictEqual(mutant.status, 0, 'valid no-op mutation of real callees must be rejected');
+        assert.match(mutant.stderr, /must bind exactly start, end, and star-search autocomplete once each/,
+            'no-op mutation must fail specifically because binding spy did not run');
     }
 
     // Simulate app.js explicit index build:

@@ -1,6 +1,8 @@
 let searchIndex = null;
 let searchStarData = null;
 
+const SGR_A_STAR = { n: 'Sagittarius A*', isSgrA: true, x: 0, y: 0, z: 0 };
+
 function buildSearchIndex(starData, stats = null) {
     searchStarData = starData;
     searchIndex = new Map();
@@ -54,6 +56,8 @@ function getSuggestions(query, starData, limit = 10, stats = null) {
     let initialCandidates = [];
     const maxCandidates = 512;
 
+    const isSgrQuery = ['sgr', 'sgr a*', 'sagittarius', 'sagittarius a*'].some(q => normalizedQuery.includes(q));
+
     if (queryLen <= 3) {
         initialCandidates = searchIndex.get(normalizedQuery) || [];
     } else {
@@ -73,7 +77,7 @@ function getSuggestions(query, starData, limit = 10, stats = null) {
             }
         }
 
-        if (minCount === 0) return [];
+        if (minCount === 0 && !isSgrQuery) return [];
         initialCandidates = searchIndex.get(bestGram) || [];
     }
 
@@ -123,6 +127,15 @@ function getSuggestions(query, starData, limit = 10, stats = null) {
         }
     }
 
+    if (isSgrQuery) {
+        if (!matches.some(m => m.star.isSgrA)) {
+            matches.unshift({ star: SGR_A_STAR, isPrefix: true });
+            if (matches.length > limit) {
+                matches.pop();
+            }
+        }
+    }
+
     return matches.map(m => m.star);
 }
 
@@ -132,7 +145,7 @@ function normalizeSearchText(value) {
         : '';
 }
 
-function initAutocomplete(input, listbox, getStarData) {
+function initAutocomplete(input, listbox, getStarData, onSelect = null) {
     let activeIndex = -1;
     let currentSuggestions = [];
 
@@ -199,7 +212,7 @@ function initAutocomplete(input, listbox, getStarData) {
             closeList();
             return;
         }
-        currentSuggestions = getSuggestions(query, getStarData(), 10);
+        currentSuggestions = getSuggestions(query, getStarData(), 8);
         activeIndex = -1;
         renderList();
     });
@@ -208,7 +221,7 @@ function initAutocomplete(input, listbox, getStarData) {
         if (listbox.hidden) {
             // Re-open on arrow down if there's text
             if (e.key === 'ArrowDown' && input.value.trim()) {
-                currentSuggestions = getSuggestions(input.value.trim(), getStarData(), 10);
+                currentSuggestions = getSuggestions(input.value.trim(), getStarData(), 8);
                 if (currentSuggestions.length > 0) {
                     activeIndex = 0;
                     renderList();
@@ -231,7 +244,9 @@ function initAutocomplete(input, listbox, getStarData) {
             if (activeIndex >= 0 && activeIndex < currentSuggestions.length) {
                 e.preventDefault();
                 input.value = currentSuggestions[activeIndex].n;
+                const selectedStar = currentSuggestions[activeIndex];
                 closeList();
+                if (onSelect) onSelect(selectedStar);
             }
         } else if (e.key === 'Escape') {
             closeList();
@@ -266,8 +281,10 @@ function initAutocomplete(input, listbox, getStarData) {
                 const index = parseInt(li.id.split('-opt-')[1], 10);
                 if (!isNaN(index) && currentSuggestions[index]) {
                     input.value = currentSuggestions[index].n;
+                    const selectedStar = currentSuggestions[index];
                     closeList();
                     input.focus();
+                    if (onSelect) onSelect(selectedStar);
                 }
             }
         } else if (document.activeElement !== input) {
@@ -313,5 +330,5 @@ function initAutocomplete(input, listbox, getStarData) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { getSuggestions, initAutocomplete, normalizeSearchText, buildSearchIndex };
+    module.exports = { getSuggestions, initAutocomplete, normalizeSearchText, buildSearchIndex, SGR_A_STAR };
 }

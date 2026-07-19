@@ -108,7 +108,7 @@ describe('Visual Logic', () => {
 
     it('inspection visibility thresholds/hysteresis and spectral-class mapping', () => {
         assert.strictEqual(getSpectralColorHex('O'), 0x9bb0ff);
-        assert.strictEqual(getSpectralColorHex('M'), 0xffcc6f);
+        assert.strictEqual(getSpectralColorHex('M'), 0xff5522);
         assert.strictEqual(getSpectralColorHex('G'), 0xfff4ea);
         assert.strictEqual(getSpectralColorHex('Unknown'), 0xffffff);
     });
@@ -127,8 +127,39 @@ describe('Visual Logic', () => {
         assert.ok(paramsF.granulationContrast >= 0.15); // enough contrast for a 350px disk, not flat
 
         const paramsM = getPhotosphereParams('M');
-        assert.strictEqual(paramsM.baseColor, 0xffcc6f);
+        assert.strictEqual(paramsM.baseColor, 0xff5522);
         assert.ok(paramsM.granulationContrast > paramsF.granulationContrast); // cooler stars have higher contrast granulation generally
+    });
+
+    it('getPhotosphereParams generates deterministic seed and activity based on spectrum', () => {
+        const { getPhotosphereParams } = require('./visual_logic.js');
+        const params1 = getPhotosphereParams('G2V');
+        const params2 = getPhotosphereParams('G2V');
+        const params3 = getPhotosphereParams('M5V');
+
+        // Deterministic
+        assert.strictEqual(params1.seed, params2.seed);
+        assert.strictEqual(params1.activity, params2.activity);
+
+        // Different for different spectrum
+        assert.notStrictEqual(params1.seed, params3.seed);
+
+        // Missing/malformed
+        const paramsEmpty = getPhotosphereParams('');
+        assert.ok(isFinite(paramsEmpty.seed) && isFinite(paramsEmpty.activity));
+
+        const paramsNull = getPhotosphereParams(null);
+        assert.ok(isFinite(paramsNull.seed) && isFinite(paramsNull.activity));
+    });
+
+    it('calculateReducedMotionTime reduces surface evolution but keeps time finite', () => {
+        const { calculateReducedMotionTime } = require('./visual_logic.js');
+        const normalTime = calculateReducedMotionTime(10.0, false);
+        const reducedTime = calculateReducedMotionTime(10.0, true);
+
+        assert.strictEqual(normalTime, 10.0);
+        assert.ok(isFinite(reducedTime));
+        assert.ok(reducedTime < normalTime, 'Reduced motion time should be drastically reduced');
     });
 
 
@@ -138,8 +169,8 @@ describe('Visual Logic', () => {
         const { calculateDetailLOD } = require('./visual_logic.js');
         // fov=60, height=1080
         const lodFar = calculateDetailLOD(300, 60, 1080);
-        const lodMid = calculateDetailLOD(12, 60, 1080);
-        const lodClose = calculateDetailLOD(4, 60, 1080);
+        const lodMid = calculateDetailLOD(26.5, 60, 1080);
+        const lodClose = calculateDetailLOD(10, 60, 1080);
 
         // Far: opacity 0, scale matches unresolved point (small), pointOpacity 1
         assert.strictEqual(lodFar.detailOpacity, 0.0);

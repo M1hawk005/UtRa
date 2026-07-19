@@ -39,9 +39,9 @@ function calculateOverviewOpacity(galDist, transitionOpacity, isActive, opacityF
 
 function calculateDetailLOD(dist, fovDegrees, viewportHeight) {
     // Continuous LOD morph across a camera-distance band wider than one wheel step.
-    // Transition band: distance 18.0 (far, morph starts) down to 8.0 (close, morph ends)
-    const distFar = 18.0;
-    const distClose = 8.0;
+    // Transition band: distance 32.0 (far, morph starts) down to 21.0 (close, morph ends)
+    const distFar = 32.0;
+    const distClose = 21.0;
 
     let t = (distFar - dist) / (distFar - distClose);
     t = Math.max(0.0, Math.min(1.0, t));
@@ -104,6 +104,25 @@ function calculateMinDistance(modelRadius, maxFraction, fovDegrees) {
     return modelRadius / Math.tan(maxRad / 2);
 }
 
+function calculateInspectionScale(cameraDist, fovDegrees, viewportWidth, viewportHeight, targetFraction) {
+    if (!Number.isFinite(cameraDist) || !Number.isFinite(fovDegrees) || !Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) || !Number.isFinite(targetFraction)) {
+        return 1.0;
+    }
+    if (cameraDist <= 0 || fovDegrees <= 0 || viewportWidth <= 0 || viewportHeight <= 0 || targetFraction <= 0) {
+        return 1.0;
+    }
+
+    const shortDim = Math.min(viewportWidth, viewportHeight);
+    const targetPhysicalHeight = (shortDim * targetFraction) / viewportHeight;
+    const fovRad = (fovDegrees * Math.PI) / 180;
+    const viewHeightAtDist = 2 * cameraDist * Math.tan(fovRad / 2);
+
+    const targetDiameterWorld = targetPhysicalHeight * viewHeightAtDist;
+    const scale = targetDiameterWorld / 2.0;
+
+    return Number.isFinite(scale) && scale > 0 ? scale : 1.0;
+}
+
 function getProvenance(isSol, isProcedural) {
     if (isProcedural) return null;
     if (isSol) return 'Observed: <a href="https://svs.gsfc.nasa.gov/3712/" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: underline;">NASA/GSFC/SDO HMI</a>';
@@ -119,13 +138,13 @@ function getSpectralColorHex(spectrum) {
         case 'A': return 0xcad7ff;
         case 'F': return 0xf8f7ff;
         case 'G': return 0xfff4ea;
-        case 'K': return 0xffd2a1;
-        case 'M': return 0xffcc6f;
+        case 'K': return 0xffb56c;
+        case 'M': return 0xff5522;
         default: return 0xffffff;
     }
 }
 
-function getPhotosphereParams(spectrum) {
+function getPhotosphereParams(spectrum, identityStr) {
     if (!spectrum) spectrum = 'G';
     const cls = spectrum.charAt(0).toUpperCase();
     const baseColor = getSpectralColorHex(cls);
@@ -170,12 +189,36 @@ function getPhotosphereParams(spectrum) {
             break;
     }
 
+    // Hash the spectrum string for a stable deterministic seed
+    let hash = 0;
+    const safeSpec = spectrum || 'Unknown';
+    const safeId = (identityStr !== undefined && identityStr !== null) ? String(identityStr) : '';
+    const combined = safeSpec + '|' + safeId;
+    for (let i = 0; i < combined.length; i++) {
+        hash = (hash << 5) - hash + combined.charCodeAt(i);
+        hash |= 0;
+    }
+    const seed = (Math.abs(hash) % 1000) / 1000.0;
+
+    // Derived deterministic activity profile based on seed
+    const activity = 0.5 + 0.5 * Math.sin(seed * Math.PI * 2.0);
+
     return {
         baseColor,
         limbDarkening,
         granulationContrast,
-        granulationScale
+        granulationScale,
+        seed,
+        activity
     };
+}
+
+function calculateReducedMotionTime(time, reducedMotion) {
+    if (reducedMotion) {
+        // Slow down time by a factor of 100 to reduce motion drastically
+        return time * 0.01;
+    }
+    return time;
 }
 
 function applyMaterialOpacity(material, opacityValue) {
@@ -218,6 +261,8 @@ if (typeof module !== 'undefined') {
         calculateMinDistance,
         getProvenance,
         updateRouteMarkerVisibility,
-        getPhotosphereParams
+        getPhotosphereParams,
+        calculateReducedMotionTime,
+        calculateInspectionScale
     };
 }

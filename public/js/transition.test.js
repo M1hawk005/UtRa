@@ -114,9 +114,13 @@ describe('Transition State Machine (Navigation)', () => {
         assertApprox(state.mapArcT, 0.0);
 
         // Assert restarted transition completes properly
-        // Progress was reset to 0.1 because opacity was 0.575.
-        // Need 100ms to reach progress 0.2 (end of departure).
+        // Progress was reset to 0.0, so after 100ms it should be at progress 0.1 (mid departure).
         updateTransition(state, 100);
+        assert.strictEqual(state.phase, 'DEPARTURE');
+        assertApprox(state.opacity, 0.3625);
+        assertApprox(state.mapArcT, 0.0);
+
+        updateTransition(state, 100); // end of departure
         assert.strictEqual(state.phase, 'MAP_ARC');
         assertApprox(state.opacity, OPACITY_FLOOR);
         assertApprox(state.mapArcT, 0.0);
@@ -188,5 +192,52 @@ describe('Transition State Machine (Navigation)', () => {
         assert.strictEqual(state.isActive, false);
         assert.strictEqual(state.isFlying, false);
         assertApprox(state.arrivalT, 1.0);
+    });
+
+    it('focus phase (isFocus) skips map arc and fade, using focusT', () => {
+        const state = createTransition({ duration: 1000, isFocus: true });
+        startTransition(state, { isFocus: true });
+
+        assert.strictEqual(state.phase, 'FOCUS');
+        assert.strictEqual(state.isActive, true);
+
+        updateTransition(state, 500);
+        assert.strictEqual(state.phase, 'FOCUS');
+        assertApprox(state.opacity, 1.0);
+        assertApprox(state.focusT, 0.5);
+
+        updateTransition(state, 500); // Terminal sample
+        assert.strictEqual(state.phase, 'FOCUS');
+        assertApprox(state.opacity, 1.0);
+        assertApprox(state.focusT, 1.0);
+        assert.strictEqual(state.isFlying, true);
+
+        updateTransition(state, 1);
+        assert.strictEqual(state.phase, 'IDLE');
+        assert.strictEqual(state.isFlying, false);
+    });
+
+    it('focus phase with reduced motion immediately completes to terminal geometry', () => {
+        const state = createTransition({ duration: 1000, isFocus: true, reducedMotion: true });
+        startTransition(state, { isFocus: true });
+
+        updateTransition(state, 100);
+        assert.strictEqual(state.phase, 'FOCUS');
+        assertApprox(state.opacity, 1.0);
+        assertApprox(state.focusT, 1.0);
+
+        updateTransition(state, 1);
+        assert.strictEqual(state.phase, 'IDLE');
+    });
+
+    it('interruption during focus phase halts without completing terminal', () => {
+        const state = createTransition({ duration: 1000, isFocus: true });
+        startTransition(state, { isFocus: true });
+        updateTransition(state, 100);
+        interruptTransition(state);
+
+        assert.strictEqual(state.isFlying, false);
+        assert.strictEqual(state.isActive, false);
+        assert.notStrictEqual(state.focusT, 1.0);
     });
 });
