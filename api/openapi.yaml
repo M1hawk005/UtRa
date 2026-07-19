@@ -162,7 +162,7 @@ paths:
       summary: Report readiness of the startup-loaded dataset
       responses:
         "200":
-          description: The immutable runtime dataset was loaded at startup.
+          description: The server completed startup; dataset_size reports the loaded startup snapshot.
           content:
             application/json:
               schema:
@@ -172,7 +172,8 @@ paths:
 components:
   responses:
     MethodNotAllowed:
-      description: The endpoint does not support this HTTP method. GET operations return `Allow: GET, HEAD`; other operations advertise their sole supported method.
+      description: |
+        The endpoint does not support this HTTP method. GET operations return `Allow: GET, HEAD`; other operations advertise their sole supported method.
       headers:
         Allow:
           required: true
@@ -201,6 +202,16 @@ components:
       type: object
       additionalProperties: false
       required: [start, end, max_jump_pc, speed_c]
+      description: |
+        Star-name lookup for `start` and `end` is case-insensitive. It accepts:
+
+        - an exact `Name`;
+        - a `Name` prefix followed by a space;
+        - an exact `ProperName`; or
+        - an exact Bayer designation plus constellation.
+
+        Map iteration order makes ambiguous matches nondeterministic. Full catalog
+        names reduce ambiguity but do not guarantee which record is selected.
       properties:
         start:
           type: string
