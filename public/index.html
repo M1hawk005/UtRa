@@ -6,11 +6,85 @@
     <title>UtRa Navigation System // TACTICAL</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <!-- Unified dark sci-fi / Tokyo Night theme. Redefines the design tokens and
+         reconciles the few elements that hard-coded off-palette colours so every
+         panel, button, input and card shares one system. Loaded after style.css so
+         the token overrides cascade everywhere without touching the base rules. -->
+    <style>
+    :root {
+        /* Surfaces — one dark navy family, no more mixed blacks and dark-blues */
+        --bg: #0e0e14;
+        --surface: #16161e;
+        --panel-bg: rgba(16, 17, 24, 0.85);
+        --glass: rgba(16, 17, 24, 0.82);
+
+        /* Framing — a single cyan accent replaces the stray white borders */
+        --border: #55f6ff;
+        --border-soft: rgba(85, 246, 255, 0.30);
+        --border-hair: rgba(192, 202, 245, 0.14);
+
+        /* Text — Tokyo Night foregrounds (primary / secondary / dim) */
+        --text-primary: #c0caf5;
+        --text-secondary: #a9b1d6;
+        --text: #c0caf5;
+        --text-dim: #565f89;
+        --dim: #565f89;
+
+        /* Accents — cyan for structure, amber for data highlights */
+        --neon-cyan: #55f6ff;
+        --neon-amber: #ffc45c;
+        --highlight: #ffc45c;
+        --danger: #f7768e;
+
+        --font-mono: 'Share Tech Mono', 'Courier New', Courier, monospace;
+
+        /* Typographic scale — three coherent steps across the whole UI.
+           small  : labels, data pairs, captions, links
+           medium : body copy, buttons, autocomplete options
+           large  : inputs / search field and card / panel titles */
+        --text-sm: 0.8125rem;   /* 13px */
+        --text-md: 0.9375rem;   /* 15px */
+        --text-lg: 1.0625rem;   /* 17px */
+    }
+
+    /* Base type scale across the entire application */
+    body {
+        font-size: var(--text-md);
+        line-height: 1.5;
+    }
+
+    /* Floating search shared the panel geometry but used a solid black fill;
+       give it the same translucent glass and cyan frame as every other panel. */
+    .floating-search-container {
+        background: var(--glass);
+        border-color: var(--border-soft);
+        box-shadow: 0 4px 16px rgba(85, 246, 255, 0.10);
+    }
+
+    /* On-theme error state instead of pure #ff0000. */
+    .error {
+        color: var(--danger);
+        border-color: var(--danger);
+        background: rgba(247, 118, 142, 0.10);
+    }
+
+    /* Structural hairlines were pure-white rgba; tie them to the palette. */
+    #hop-list,
+    #hop-list li,
+    .autocomplete-option { border-color: var(--border-hair); }
+
+    input:focus {
+        border-bottom-color: var(--neon-cyan);
+        background: rgba(85, 246, 255, 0.06);
+    }
+    </style>
 </head>
 <body>
     <div id="canvas-container"></div>
     <div id="floating-search" class="combobox-wrapper floating-search-container">
         <div style="display: flex;">
+            <button id="btn-home-search" type="button" aria-label="Home" title="Home" style="cursor:pointer;width:auto;margin-top:0;border:none;border-right:1px solid var(--border);padding:0 1rem;min-height:44px;display:flex;align-items:center;justify-content:center;background:transparent;pointer-events:auto;position:relative;z-index:9999;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+            </button>
             <label for="star-search" class="sr-only">Search</label>
             <input type="text" id="star-search" placeholder="Search stars or Sagittarius A*" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-listbox" style="flex-grow: 1;">
             <button id="btn-route-mode" type="button" aria-label="Directions" aria-expanded="false" aria-controls="ui-panel" title="Directions" style="width: auto; margin-top: 0; border: none; border-left: 1px solid var(--border); padding: 0 1rem; min-height: 44px; display: flex; align-items: center; justify-content: center;">
@@ -24,10 +98,9 @@
         <div class="panel-header" id="panel-header">
             <h1 class="drag-handle sr-only">Directions</h1>
             <div style="display:flex; align-items:center; width: 100%; gap: 0.5rem; margin-bottom: 1rem;">
-                <button id="btn-search-mode" type="button" aria-label="Return to search mode" aria-controls="floating-search" style="margin: 0; padding: 0; width: 44px; min-height: 44px; border: none; background: transparent; display:flex; justify-content:center; align-items:center;">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                <button id="btn-search-mode" type="button" aria-label="Return to search mode" aria-controls="floating-search" style="cursor:pointer;margin:0;padding:0;width:44px;min-height:44px;border:none;background:transparent;display:flex;justify-content:center;align-items:center;pointer-events:auto;position:relative;z-index:9999;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
                 </button>
-                <div style="font-size: 1.1rem; flex-grow: 1;">Directions</div>
+                <div style="flex-grow: 1;">Directions</div>
                 <button id="toggle-panel" type="button" aria-label="Collapse navigation panel" aria-expanded="true" style="border: none; background: transparent;">_</button>
             </div>
         </div>
@@ -91,6 +164,16 @@
         <button id="map-btn-restore" class="floating-btn bottom" type="button" aria-label="Restore UI">Show UI</button>
     </div>
 
+    <aside id="star-details" hidden aria-label="Focused star details">
+        <div class="card-header">
+            <h2></h2>
+            <button class="card-toggle" aria-label="Collapse card" title="Collapse">−</button>
+        </div>
+        <div class="card-body">
+            <dl></dl>
+            <a target="_blank" rel="noopener noreferrer">SEARCH WIKIPEDIA ↗</a>
+        </div>
+    </aside>
 
     <!-- Three.js and OrbitControls -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
