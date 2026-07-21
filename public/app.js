@@ -44,7 +44,12 @@ let flightTargetStarIndex = -1;
 let interiorSky;
 let overviewSky, overviewSkyMaterial;
 let detailGroup = new THREE.Group();
-let solMesh, starMesh, coronaMesh;
+let solMesh, starMesh, coronaMesh, instancedStarsMesh;
+const _scratchLod = {};
+const _scratchPhoto = {};
+const maxInstancedStars = 64;
+let dummyObj;
+const closestStars = [];
 
 const CANONICAL_FOCUS_DISTANCE = Math.hypot(0, -6.32, 18.97);
 
@@ -367,6 +372,7 @@ function createNebulae() {
 }
 
 function initGalaxy() {
+    if (!dummyObj) dummyObj = new THREE.Object3D();
     const random = galaxyRandom();
     const isMobile = window.matchMedia('(max-width: 600px)').matches;
     const dist = 8178; // Parsecs to Sagittarius A*
@@ -437,7 +443,7 @@ function patchSkyShader(shader) {
     infoLine.style.fontSize = '10px';
     infoLine.style.marginTop = '10px';
     infoLine.style.color = 'var(--text-dim)';
-    infoLine.innerHTML = `Interior sky: <a href="https://www.eso.org/public/images/eso0932a/" target="_blank" rel="noopener noreferrer" style="color:var(--highlight)">ESO/S. Brunier</a> | <span id="star-attribution"></span>`;
+    infoLine.innerHTML = `Interior sky: <a href="https://www.eso.org/public/images/eso0932a/" target="_blank" rel="noopener noreferrer" style="color:var(--neon-cyan)">ESO/S. Brunier</a> | <span id="star-attribution"></span>`;
     uiPanel.appendChild(infoLine);
 
     // Real-time Schwarzschild-inspired visual approximation, not full GR ray tracing.
@@ -1209,14 +1215,18 @@ function patchSkyShader(shader) {
 // GLSL Procedural Sun Shader replaces static canvas texture
 const vertexShader = `
     uniform vec3 uGalacticCenter;
+    uniform float uFov;
+    uniform float uViewportHeight;
     attribute float size;
     attribute vec3 customColor;
     attribute float isProcedural;
     attribute float isSelected;
+    attribute float radius;
     varying vec3 vColor;
     varying float vIsProcedural;
     varying float vIsSelected;
     varying float vGalacticDist;
+    varying float vDist;
 
     void main() {
         vColor = customColor;
@@ -1224,10 +1234,18 @@ const vertexShader = `
         vIsSelected = isSelected;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
         vGalacticDist = length(cameraPosition - uGalacticCenter);
+        vDist = -mvPosition.z;
 
         float pointSize = clamp(size, 1.0, 4.0);
+        if (radius > 0.0) {
+            float fovRad = uFov * 3.14159265 / 180.0;
+            float viewHeightAtDist = 2.0 * vDist * tan(fovRad / 2.0);
+            float projPx = (radius * 2.0 / viewHeightAtDist) * uViewportHeight;
+            pointSize = max(pointSize, projPx);
+        }
+
         if (isSelected > 0.5) {
-            pointSize = 16.0;
+            pointSize = max(pointSize, 16.0);
         }
         gl_PointSize = pointSize;
         gl_Position = projectionMatrix * mvPosition;
@@ -1242,6 +1260,7 @@ const fragmentShader = `
     varying float vIsProcedural;
     varying float vIsSelected;
     varying float vGalacticDist;
+    varying float vDist;
 
     void main() {
         vec2 uv = gl_PointCoord.xy - vec2(0.5);
@@ -1259,18 +1278,26 @@ const fragmentShader = `
         } else {
             float psf = pow(1.0 - (dist * 2.0), 2.5);
             alpha = psf;
+
+            // Soft LOD crossfade band, aligned with the instanced-sphere fade-in
+            // (see calculateDetailLOD call for the nearby spheres). The point holds
+            // full brightness out to the far edge, then dissolves as the resolved
+            // sphere takes over, so the eye never sees a hard point->sphere pop.
+            float t = (9.5 - vDist) / (9.5 - 3.0);
+            t = clamp(t, 0.0, 1.0);
+            float pt = clamp((t - 0.25) / 0.75, 0.0, 1.0);
+            float pointOpacity = 1.0 - pt * pt * (3.0 - 2.0 * pt);
+            alpha *= pointOpacity;
         }
 
         if (vIsProcedural > 0.5) {
             float macroFade = smoothstep(12000.0, 25000.0, vGalacticDist);
-            alpha *= macroFade;
+            alpha *= (1.0 - macroFade);
         }
-
-        alpha *= uTransitionOpacity;
 
         if (alpha < 0.01) discard;
 
-        gl_FragColor = vec4(finalColor, alpha);
+        gl_FragColor = vec4(finalColor, alpha * uTransitionOpacity);
         #include <tonemapping_fragment>
         #include <encodings_fragment>
     }
@@ -1527,6 +1554,7 @@ async function loadStars() {
         const sizes = new Float32Array(starData.length);
         const isProceduralArr = new Float32Array(starData.length);
         const isSelectedArr = new Float32Array(starData.length);
+        const radiiArr = new Float32Array(starData.length);
 
         for (let i = 0; i < starData.length; i++) {
             const s = starData[i];
@@ -1549,6 +1577,19 @@ async function loadStars() {
             sizes[i] = size;
             isProceduralArr[i] = (s.n && s.n.startsWith("GAL-")) ? 1.0 : 0.0;
             isSelectedArr[i] = 0.0;
+            let r = 1.0;
+            const cls = (s.s && s.s.length > 0) ? s.s.charAt(0).toUpperCase() : 'G';
+            let hash = Math.abs((s.x || 0) + (s.y || 0) + (s.z || 0));
+            switch(cls) {
+                case 'O': r = 6.0 + (hash % 9.0); break;
+                case 'B': r = 3.0 + (hash % 3.0); break;
+                case 'A': r = 1.5 + (hash % 1.5); break;
+                case 'F': r = 1.0 + (hash % 0.5); break;
+                case 'G': r = 0.8 + (hash % 0.2); break;
+                case 'K': r = 0.6 + (hash % 0.2); break;
+                case 'M': r = 0.1 + (hash % 0.5); break;
+            }
+            radiiArr[i] = r * 0.02325;
         }
 
         starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -1556,13 +1597,16 @@ async function loadStars() {
         starsGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
         starsGeometry.setAttribute('isProcedural', new THREE.BufferAttribute(isProceduralArr, 1));
         starsGeometry.setAttribute('isSelected', new THREE.BufferAttribute(isSelectedArr, 1));
+        starsGeometry.setAttribute('radius', new THREE.BufferAttribute(radiiArr, 1));
 
         const shaderMaterial = new THREE.ShaderMaterial({
             uniforms: {
                 color: { value: new THREE.Color(0xffffff) },
                 uSelectedPointOpacity: { value: 1.0 },
                 uGalacticCenter: { value: galacticCenter },
-                uTransitionOpacity: { value: 1.0 }
+                uTransitionOpacity: { value: 1.0 },
+                uFov: { value: camera ? camera.fov : 60.0 },
+                uViewportHeight: { value: window.innerHeight }
             },
             vertexShader: vertexShader,
             fragmentShader: fragmentShader,
@@ -1574,6 +1618,102 @@ async function loadStars() {
 
         starsPoints = new THREE.Points(starsGeometry, shaderMaterial);
         scene.add(starsPoints);
+
+        const instancedGeo = new THREE.SphereGeometry(1, 16, 16);
+        const instColor = new Float32Array(maxInstancedStars * 3);
+        const instLimb = new Float32Array(maxInstancedStars);
+        const instActivity = new Float32Array(maxInstancedStars);
+        const instSeed = new Float32Array(maxInstancedStars);
+        const instOpacity = new Float32Array(maxInstancedStars);
+        
+        instancedGeo.setAttribute('instColor', new THREE.InstancedBufferAttribute(instColor, 3));
+        instancedGeo.setAttribute('instLimb', new THREE.InstancedBufferAttribute(instLimb, 1));
+        instancedGeo.setAttribute('instActivity', new THREE.InstancedBufferAttribute(instActivity, 1));
+        instancedGeo.setAttribute('instSeed', new THREE.InstancedBufferAttribute(instSeed, 1));
+        instancedGeo.setAttribute('instOpacity', new THREE.InstancedBufferAttribute(instOpacity, 1));
+
+        const instancedMat = new THREE.ShaderMaterial({
+            uniforms: {
+                uTime: { value: 0 },
+                uTransitionOpacity: { value: 1.0 }
+            },
+            vertexShader: `
+                attribute vec3 instColor;
+                attribute float instLimb;
+                attribute float instActivity;
+                attribute float instSeed;
+                attribute float instOpacity;
+                
+                varying vec3 vColor;
+                varying float vLimb;
+                varying float vActivity;
+                varying float vSeed;
+                varying float vOpacity;
+                varying vec3 vNormal;
+                varying vec3 vViewPosition;
+                
+                void main() {
+                    vColor = instColor;
+                    vLimb = instLimb;
+                    vActivity = instActivity;
+                    vSeed = instSeed;
+                    vOpacity = instOpacity;
+                    vNormal = normalize(normalMatrix * normal);
+                    vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+                    vViewPosition = -mvPosition.xyz;
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                uniform float uTime;
+                uniform float uTransitionOpacity;
+                
+                varying vec3 vColor;
+                varying float vLimb;
+                varying float vActivity;
+                varying float vSeed;
+                varying float vOpacity;
+                varying vec3 vNormal;
+                varying vec3 vViewPosition;
+                
+                float hash(float n) { return fract(sin(n) * 1e4); }
+                float noise(vec3 x) {
+                    vec3 p = floor(x);
+                    vec3 f = fract(x);
+                    f = f*f*(3.0-2.0*f);
+                    float n = p.x + p.y*57.0 + 113.0*p.z;
+                    return mix(mix(mix( hash(n+  0.0), hash(n+  1.0),f.x),
+                                   mix( hash(n+ 57.0), hash(n+ 58.0),f.x),f.y),
+                               mix(mix( hash(n+113.0), hash(n+114.0),f.x),
+                                   mix( hash(n+170.0), hash(n+171.0),f.x),f.y),f.z);
+                }
+                
+                void main() {
+                    if (vOpacity <= 0.0) discard;
+                    
+                    vec3 normal = normalize(vNormal);
+                    vec3 viewDir = normalize(vViewPosition);
+                    float ndotv = max(dot(normal, viewDir), 0.0);
+                    
+                    float limb = mix(1.0, ndotv, vLimb);
+                    
+                    float n = noise(normal * 20.0 + uTime * 0.5 + vSeed * 100.0);
+                    float brightness = 1.0 - (n * 0.2 * vActivity);
+                    
+                    float edge = pow(1.0 - ndotv, 4.0) * 0.35;
+                    vec3 finalColor = vColor * limb * brightness + vColor * edge;
+                    
+                    gl_FragColor = vec4(finalColor, vOpacity * uTransitionOpacity);
+                    #include <tonemapping_fragment>
+                    #include <encodings_fragment>
+                }
+            `,
+            transparent: true, depthTest: true
+        });
+
+        instancedStarsMesh = new THREE.InstancedMesh(instancedGeo, instancedMat, maxInstancedStars);
+        instancedStarsMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        scene.add(instancedStarsMesh);
 
         frameGalaxy();
 
@@ -2013,22 +2153,67 @@ if (routeModeBtn) {
     });
 }
 
-if (searchModeBtn) {
-    searchModeBtn.addEventListener('click', () => {
-        if (appMode === 'SEARCH') return;
-        appMode = 'SEARCH';
-        globalThis.appMode = appMode;
-        appUiPanel.classList.add('hidden');
-        appUiPanel.setAttribute('aria-hidden', 'true');
-        appUiPanel.setAttribute('inert', 'true');
-        routeModeBtn.setAttribute('aria-expanded', 'false');
+function resetToHome() {
+    if (typeof clearRoute === 'function') clearRoute();
+    
+    const searchInput = document.getElementById('star-search');
+    if (searchInput) {
+        searchInput.value = '';
+        if (typeof hideListbox === 'function') hideListbox(document.getElementById('search-listbox'));
+    }
+    
+    const endInput = document.getElementById('end');
+    if (endInput) endInput.value = '';
+    const startInput = document.getElementById('start');
+    if (startInput) startInput.value = 'Sol';
 
-        floatingSearch.classList.remove('hidden');
-        floatingSearch.setAttribute('aria-hidden', 'false');
-        floatingSearch.removeAttribute('inert');
+    if (currentSelectedStarIndex >= 0 && starsGeometry) {
+        const isSelectedAttr = starsGeometry.getAttribute('isSelected');
+        if (isSelectedAttr) {
+            isSelectedAttr.setX(currentSelectedStarIndex, 0.0);
+            isSelectedAttr.needsUpdate = true;
+        }
+    }
+    
+    flightTargetStar = null;
+    flightTargetStarIndex = -1;
+    currentSelectedStarIndex = -1;
+    if (focusRing) focusRing.visible = false;
+    
+    const detailsCard = document.getElementById('details-card');
+    if (detailsCard) {
+        detailsCard.hidden = true;
+        detailsCard.replaceChildren();
+    }
+    const starDetailsCard = document.getElementById('star-details');
+    if (starDetailsCard) starDetailsCard.classList.add('hidden');
 
-        document.getElementById('star-search').focus();
-    });
+    if (document.body.classList.contains('map-only-mode') && typeof exitMapMode === 'function') {
+        exitMapMode(false);
+    }
+    if (typeof finishFlightTransition === 'function') {
+        finishFlightTransition(false);
+    }
+
+    if (appMode !== 'SEARCH' && searchModeBtn) {
+        searchModeBtn.click();
+    } else if (appMode === 'SEARCH') {
+        const searchBox = document.getElementById('star-search');
+        if (searchBox) searchBox.focus();
+    }
+
+    if (typeof zoomToOverviewPreserveDirection === 'function') zoomToOverviewPreserveDirection();
+}
+
+function zoomToOverviewPreserveDirection() {
+    const OVERVIEW_DISTANCE = 50000;
+    const target = new THREE.Vector3(0, 0, 0);
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    if (dir.lengthSq() < 0.001) { dir.set(0, -1, 1).normalize(); }
+    camera.position.copy(target).addScaledVector(dir, OVERVIEW_DISTANCE);
+    camera.position.y = Math.sign(camera.position.y) * Math.max(Math.abs(camera.position.y), OVERVIEW_DISTANCE * 0.3);
+    controls.target.copy(target);
+    controls.update();
 }
 
 document.getElementById('nav-form').addEventListener('submit', async (e) => {
@@ -2101,7 +2286,11 @@ function isMobile() {
 }
 
 function onDragStart(e) {
-    if (e.target === toggleBtn) return;
+    // Don't start a drag (which pointer-captures the header and steals the
+    // subsequent click) when the press lands on any header control — e.g.
+    // the back/search-mode button or the collapse toggle. Otherwise their
+    // click events never fire.
+    if (e.target.closest('button')) return;
     if (isMobile()) return; // Don't drag on mobile — panel is bottom-fixed
     if (isDragging || (e.pointerType === 'mouse' && e.button !== 0)) return;
     isDragging = true;
@@ -2327,12 +2516,21 @@ function flyToStar(x, y, z, options = {}) {
     }
 }
 
-// Persistent star details and intentional canvas picking
-const detailsCard = document.createElement('aside');
-detailsCard.id = 'star-details';
-detailsCard.hidden = true;
-detailsCard.setAttribute('aria-label', 'Focused star details');
-document.body.appendChild(detailsCard);
+// Persistent star details card (static HTML in index.html)
+const detailsCard = document.getElementById('star-details');
+
+// Wire collapse toggle once
+(function initCardToggle() {
+    const toggle = detailsCard.querySelector('.card-toggle');
+    if (!toggle) return;
+    toggle.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const collapsed = detailsCard.classList.toggle('card-collapsed');
+        toggle.textContent = collapsed ? '+' : '−';
+        toggle.title = collapsed ? 'Expand' : 'Collapse';
+        toggle.setAttribute('aria-label', collapsed ? 'Expand card' : 'Collapse card');
+    });
+})();
 
 function appendDetail(list, label, value, isHTML = false) {
     const term = document.createElement('dt');
@@ -2367,11 +2565,16 @@ function showStarDetails(star, options = {}) {
         }
     }
 
-    const title = document.createElement('h2');
-    const list = document.createElement('dl');
-    const wikiLink = document.createElement('a');
     const name = displayValue(star.n);
+    const title = detailsCard.querySelector('h2');
+    const list = detailsCard.querySelector('dl');
+    const wikiLink = detailsCard.querySelector('a');
+
     title.textContent = name;
+
+    // Clear and repopulate dl
+    while (list.firstChild) list.removeChild(list.firstChild);
+
     if (star.isSgrA) {
         appendDetail(list, 'TYPE', 'Supermassive black hole / Galactic Center');
     } else {
@@ -2391,11 +2594,16 @@ function showStarDetails(star, options = {}) {
             appendDetail(list, 'PROVENANCE', provenance, true);
         }
     }
-    wikiLink.textContent = 'SEARCH WIKIPEDIA ↗';
     wikiLink.href = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(name)}`;
-    wikiLink.target = '_blank';
-    wikiLink.rel = 'noopener noreferrer';
-    detailsCard.replaceChildren(title, list, wikiLink);
+
+    // Reset collapse state
+    const toggle = detailsCard.querySelector('.card-toggle');
+    if (toggle) {
+        toggle.textContent = '−';
+        toggle.title = 'Collapse';
+        toggle.setAttribute('aria-label', 'Collapse card');
+    }
+    detailsCard.classList.remove('hidden', 'card-collapsed');
     detailsCard.hidden = false;
 }
 
@@ -2730,7 +2938,7 @@ function animate() {
     if (currentSelectedStarIndex >= 0) {
         const star = starData[currentSelectedStarIndex];
         const dist = camera.position.distanceTo(targetNode);
-        const lod = calculateDetailLOD(dist, camera.fov, window.innerHeight);
+        const lod = calculateDetailLOD(dist, camera.fov, window.innerHeight, 32.0, 21.0, _scratchLod);
         if (starsPoints) {
             starsPoints.material.uniforms.uSelectedPointOpacity.value = lod.pointOpacity;
         }
@@ -2753,7 +2961,7 @@ function animate() {
                 starMesh.visible = true;
                 coronaMesh.visible = true;
                 const identityStr = star.n + '|' + (star.x||0).toFixed(4) + '|' + (star.y||0).toFixed(4) + '|' + (star.z||0).toFixed(4);
-                const params = getPhotosphereParams(star.s, identityStr);
+                const params = getPhotosphereParams(star.s, identityStr, _scratchPhoto);
                 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
                 const effectiveTime = calculateReducedMotionTime(now * 0.001, reducedMotion);
                 _starBaseColor.set(params.baseColor);
@@ -2828,6 +3036,125 @@ function animate() {
     }
 
     controls.update();
+
+    if (starsPoints && starsPoints.material && starsPoints.material.uniforms.uFov) {
+        starsPoints.material.uniforms.uFov.value = camera.fov;
+        starsPoints.material.uniforms.uViewportHeight.value = window.innerHeight;
+    }
+
+    if (instancedStarsMesh && starData && starData.length > 0) {
+        
+        if (closestStars.length === 0) {
+            for (let k = 0; k < 500; k++) closestStars.push({ i: 0, distSq: 0, s: null });
+        }
+        let closestCount = 0;
+        const cx = camera.position.x;
+        const cy = camera.position.y;
+        const cz = camera.position.z;
+        const radiiArr = starsGeometry.attributes.radius.array;
+
+        for (let i = 0; i < starData.length; i++) {
+            const s = starData[i];
+            if (!s.n || s.n === "Sol" || s.n.startsWith("GAL-")) continue;
+            const dx = s.x - cx;
+            const dy = s.y - cy;
+            const dz = s.z - cz;
+            const distSq = dx*dx + dy*dy + dz*dz;
+            if (distSq < 100.0 && closestCount < 500) { // 10pc radius
+                const item = closestStars[closestCount++];
+                item.i = i;
+                item.distSq = distSq;
+                item.s = s;
+            }
+        }
+        // Selection sort for top 64
+        const count = Math.min(closestCount, maxInstancedStars);
+        for (let k = 0; k < count; k++) {
+            let minIdx = k;
+            for (let m = k + 1; m < closestCount; m++) {
+                if (closestStars[m].distSq < closestStars[minIdx].distSq) {
+                    minIdx = m;
+                }
+            }
+            if (minIdx !== k) {
+                const tmpI = closestStars[k].i;
+                const tmpD = closestStars[k].distSq;
+                const tmpS = closestStars[k].s;
+                closestStars[k].i = closestStars[minIdx].i;
+                closestStars[k].distSq = closestStars[minIdx].distSq;
+                closestStars[k].s = closestStars[minIdx].s;
+                closestStars[minIdx].i = tmpI;
+                closestStars[minIdx].distSq = tmpD;
+                closestStars[minIdx].s = tmpS;
+            }
+        }
+        instancedStarsMesh.count = count;
+
+        const instColor = instancedStarsMesh.geometry.attributes.instColor;
+        const instLimb = instancedStarsMesh.geometry.attributes.instLimb;
+        const instActivity = instancedStarsMesh.geometry.attributes.instActivity;
+        const instSeed = instancedStarsMesh.geometry.attributes.instSeed;
+        const instOpacity = instancedStarsMesh.geometry.attributes.instOpacity;
+
+        const time = performance.now() * 0.001;
+        const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const effectiveTime = calculateReducedMotionTime(time, reducedMotion);
+        instancedStarsMesh.material.uniforms.uTime.value = effectiveTime;
+
+        let selectedNodePos = null;
+        if (currentSelectedStarIndex >= 0 && detailGroup.visible) {
+            selectedNodePos = targetNode;
+        }
+
+        for (let j = 0; j < count; j++) {
+            const item = closestStars[j];
+            const s = item.s;
+            const dist = Math.sqrt(item.distSq);
+            
+            // Skip rendering instanced sphere if it is the currently selected detail star
+            let isSelectedDetailed = false;
+            if (selectedNodePos) {
+                const sdistSq = (s.x - selectedNodePos.x)**2 + (s.y - selectedNodePos.y)**2 + (s.z - selectedNodePos.z)**2;
+                if (sdistSq < 0.0001) isSelectedDetailed = true;
+            }
+
+            // Crossfade band ends at 9.5pc, comfortably inside the 10pc working-set
+            // radius above, so a sphere is already fully faded out (opacity 0) by the
+            // time it enters or leaves the set — no hard pop at the set boundary.
+            const lod = calculateDetailLOD(dist, camera.fov, window.innerHeight, 9.5, 3.0, _scratchLod);
+
+            // Drive size by detailScale (a pixel-aware scale that resolves the sphere
+            // in at a stable projected size and grows it gently to full radius) rather
+            // than opacity, so spheres ease in cinematically instead of inflating from
+            // zero. Opacity below carries the actual crossfade against the points.
+            const r = radiiArr[item.i] * lod.detailScale;
+            dummyObj.position.set(s.x, s.y, s.z);
+            dummyObj.scale.set(r, r, r);
+            dummyObj.updateMatrix();
+            instancedStarsMesh.setMatrixAt(j, dummyObj.matrix);
+            const params = getPhotosphereParams(s.s, s.x + s.y + s.z, _scratchPhoto);
+
+             _starBaseColor.set(params.baseColor);
+            instColor.setXYZ(j, _starBaseColor.r, _starBaseColor.g, _starBaseColor.b);
+            instLimb.setX(j, params.limbDarkening);
+            instActivity.setX(j, params.activity);
+            instSeed.setX(j, params.seed);
+            
+            let finalOpacity = lod.detailOpacity * flightTransitionState.opacity;
+            if (isSelectedDetailed) finalOpacity = 0.0;
+            instOpacity.setX(j, finalOpacity);
+        }
+
+        if (count > 0) {
+            instancedStarsMesh.instanceMatrix.needsUpdate = true;
+            instColor.needsUpdate = true;
+            instLimb.needsUpdate = true;
+            instActivity.needsUpdate = true;
+            instSeed.needsUpdate = true;
+            instOpacity.needsUpdate = true;
+        }
+    }
+
     renderer.render(scene, camera);
 }
 
@@ -2853,6 +3180,46 @@ window.addEventListener('resize', () => {
     if (overviewSkyMaterial) {
         overviewSkyMaterial.uniforms.uDpr.value = Math.min(window.devicePixelRatio, 2);
     }
+});
+
+// Home button (floating search): reset to overview search mode.
+function handleHomeSearchClick() {
+    appMode = 'SEARCH';
+    globalThis.appMode = 'SEARCH';
+    const sd = document.getElementById('star-details');
+    if (sd) sd.classList.add('hidden');
+    document.getElementById('ui-panel').classList.add('hidden');
+    document.getElementById('floating-search').classList.remove('hidden');
+    if (typeof finishFlightTransition === 'function') finishFlightTransition(false);
+    if (typeof exitMapMode === 'function') exitMapMode(false);
+    if (typeof zoomToOverviewPreserveDirection === 'function') zoomToOverviewPreserveDirection();
+    document.getElementById('star-search').focus();
+}
+
+// Back button (directions panel): return to search mode from the route panel.
+function handleSearchModeClick() {
+    appMode = 'SEARCH';
+    globalThis.appMode = 'SEARCH';
+    const sd = document.getElementById('star-details');
+    if (sd) sd.classList.add('hidden');
+    const uiPanel = document.getElementById('ui-panel');
+    uiPanel.classList.add('hidden');
+    uiPanel.setAttribute('aria-hidden', 'true');
+    uiPanel.setAttribute('inert', 'true');
+    const floatingSearch = document.getElementById('floating-search');
+    floatingSearch.classList.remove('hidden');
+    floatingSearch.removeAttribute('aria-hidden');
+    floatingSearch.removeAttribute('inert');
+    if (typeof finishFlightTransition === 'function') finishFlightTransition(false);
+    if (typeof exitMapMode === 'function') exitMapMode(false);
+    document.getElementById('star-search').focus();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const homeSearchBtn = document.getElementById('btn-home-search');
+    if (homeSearchBtn) homeSearchBtn.addEventListener('click', handleHomeSearchClick);
+    const searchModeBtn = document.getElementById('btn-search-mode');
+    if (searchModeBtn) searchModeBtn.addEventListener('click', handleSearchModeClick);
 });
 
 // Init
